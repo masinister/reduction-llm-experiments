@@ -108,7 +108,7 @@ def main():
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     
-    println("Emptying cache")
+    print("Emptying cache")
     torch.cuda.empty_cache()
     
 
