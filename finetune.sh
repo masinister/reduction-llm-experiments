@@ -32,10 +32,9 @@ module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; 
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 
-# Clean up any existing processes that might be using GPUs
-echo "Cleaning up existing processes..."
-pkill -f "torchrun" || true
-pkill -f "finetune.py" || true
+# Reset GPU state
+echo "Resetting GPU state..."
+nvidia-smi --gpu-reset || true
 sleep 2
 
 echo "Checking GPU status..."
@@ -92,6 +91,7 @@ echo "Using $NUM_GPUS GPUs for training"
 
 # Set CUDA environment variables for cleanup
 export CUDA_LAUNCH_BLOCKING=1
+export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 echo "Starting torchrun with $NUM_GPUS GPUs..."
 torchrun --nproc_per_node=$NUM_GPUS \

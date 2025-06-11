@@ -62,21 +62,29 @@ def load_and_prepare(args, tokenizer):
 
 def main():
     args = parse_args()
-    
-    # Clear any existing CUDA cache and reset GPU state
+      # Clear any existing CUDA cache and reset GPU state
     if torch.cuda.is_available():
         # Force cleanup of any existing CUDA contexts
         try:
+            # More aggressive cleanup
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            torch.cuda.ipc_collect()  # Clean up inter-process communication
+            
+            # Reset all devices
             for i in range(torch.cuda.device_count()):
                 torch.cuda.set_device(i)
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             torch.cuda.set_device(0)  # Reset to device 0
+            
+            # Additional cleanup
+            import gc
+            gc.collect()
+            
         except Exception as e:
             print(f"Warning: CUDA cleanup failed: {e}")
         
-        gc.collect()
         print(f"CUDA available: {torch.cuda.is_available()}")
         print(f"GPU count: {torch.cuda.device_count()}")
         if torch.cuda.device_count() > 0:
@@ -85,9 +93,16 @@ def main():
             
             # Display GPU memory status
             for i in range(torch.cuda.device_count()):
-                memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
-                memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
-                print(f"GPU {i} - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
+                try:
+                    memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
+                    memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
+                    print(f"GPU {i} - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
+                except Exception as e:
+                    print(f"GPU {i} - Unable to query memory: {e}")
+    
+    # Add delay to allow GPU state to settle
+    import time
+    time.sleep(2)
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -103,7 +118,8 @@ def main():
         cache_dir = snapshot_download(repo_id=repo_id)
         args.model_name = cache_dir
         print(f"Downloaded to '{cache_dir}'")
-      # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
+    
+    # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=False)
     
