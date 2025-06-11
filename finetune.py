@@ -1,6 +1,7 @@
 import os
 import argparse
 import torch
+import gc
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForSeq2Seq
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
@@ -61,6 +62,16 @@ def load_and_prepare(args, tokenizer):
 
 def main():
     args = parse_args()
+    
+    # Clear any existing CUDA cache to avoid device busy errors
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        print(f"GPU count: {torch.cuda.device_count()}")
+        if torch.cuda.device_count() > 0:
+            print(f"Current GPU: {torch.cuda.current_device()}")
+            print(f"GPU name: {torch.cuda.get_device_name()}")
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
