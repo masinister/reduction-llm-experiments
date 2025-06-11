@@ -62,8 +62,15 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     
+    # Set memory optimization environment variables
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
+    
+    # Clear any existing CUDA memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -89,13 +96,15 @@ def main():
         print("Set padding token to EOS token")
     
     print("Loading model...")
-    # Load model explicitly on CPU - this is key for DeepSpeed with large models
+    # Load model with most aggressive memory optimization for 70B model
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         device_map="cpu",  # Force CPU loading
         use_cache=False,   # Disable cache for training efficiency
+        trust_remote_code=True,
+        attn_implementation="flash_attention_2",  # Use Flash Attention for memory efficiency
     )
     print("Model loaded successfully on CPU")
     
@@ -140,6 +149,9 @@ def main():
         max_grad_norm=1.0,
         warmup_steps=100,
         dataloader_num_workers=0,
+        save_on_each_node=False,  # Save only on main process
+        prediction_loss_only=True,  # Reduce eval memory usage
+        eval_accumulation_steps=1,  # Reduce eval memory
     )
 
     print("Creating trainer with DeepSpeed...")
