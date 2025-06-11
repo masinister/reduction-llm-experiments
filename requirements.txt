@@ -1,10 +1,19 @@
-torch>=2.0.0
+# Core DL framework (CUDA 12.4 wheels)
+torch==2.2.0+cu124
+torchvision==0.17.0+cu124
+
+# HF ecosystem
 transformers>=4.35.0
 datasets>=2.14.0
 peft>=0.6.0
-deepspeed>=0.10.0
-huggingface_hub>=0.17.0
 accelerate>=0.20.0
+huggingface_hub>=0.17.0
+
+# Model optimizers/shards
+deepspeed>=0.10.0
 bitsandbytes>=0.41.0
+xformers>=0.0.20
+
+# Data handling
 pandas>=1.5.0
 numpy>=1.24.0
