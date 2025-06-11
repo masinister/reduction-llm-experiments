@@ -25,10 +25,10 @@ mkdir -p logs
 MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
 CSV_PATH="~/data/karp.csv"
 OUTPUT_DIR="./llama_finetune/"
-DEEPSPEED_CONFIG="deepspeed_config.json"
+DEEPSPEED_CONFIG="deepspeed-config.json"
 
 torchrun --nproc_per_node=$SLURM_GPUS_PER_NODE \
-  fine_tune.py \
+  finetune.py \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \
   --output_dir $OUTPUT_DIR \
