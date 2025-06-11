@@ -63,15 +63,31 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     
-    # Clear any existing CUDA cache to avoid device busy errors
+    # Clear any existing CUDA cache and reset GPU state
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        # Force cleanup of any existing CUDA contexts
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.set_device(i)
+                torch.cuda.empty_cache()
+            torch.cuda.set_device(0)  # Reset to device 0
+        except Exception as e:
+            print(f"Warning: CUDA cleanup failed: {e}")
+        
         gc.collect()
         print(f"CUDA available: {torch.cuda.is_available()}")
         print(f"GPU count: {torch.cuda.device_count()}")
         if torch.cuda.device_count() > 0:
             print(f"Current GPU: {torch.cuda.current_device()}")
             print(f"GPU name: {torch.cuda.get_device_name()}")
+            
+            # Display GPU memory status
+            for i in range(torch.cuda.device_count()):
+                memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
+                memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
+                print(f"GPU {i} - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():

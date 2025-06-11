@@ -70,15 +70,23 @@ if [ -n "$SLURM_GPUS_PER_NODE" ] && [ "$SLURM_GPUS_PER_NODE" != "" ]; then
 elif [ -n "$SLURM_GPUS" ] && [ "$SLURM_GPUS" != "" ]; then
     NUM_GPUS=$SLURM_GPUS
 else
-    # Fallback: count available GPUs
+    # Fallback: count available GPUs using multiple methods
     NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
     if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
-        echo "Warning: Could not determine GPU count, defaulting to 4"
-        NUM_GPUS=4
+        echo "Warning: nvidia-smi query failed, trying device count..."
+        NUM_GPUS=$(nvidia-smi -L | wc -l)
+        if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
+            echo "Warning: Could not determine GPU count, defaulting to 4"
+            NUM_GPUS=4
+        fi
     fi
 fi
 
 echo "Using $NUM_GPUS GPUs for training"
+
+# Set CUDA environment variables for cleanup
+export CUDA_LAUNCH_BLOCKING=1
+
 echo "Starting torchrun with $NUM_GPUS GPUs..."
 torchrun --nproc_per_node=$NUM_GPUS \
   finetune.py \
