@@ -2,7 +2,7 @@
 #SBATCH --job-name=llama_finetune           # Job name
 #SBATCH --output=logs/finetune_%j.out       # Standard output and error log
 #SBATCH --error=logs/finetune_%j.err
-#SBATCH --partition=gpu                     # Partition (queue) name
+#SBATCH --partition=short                   # Partition (queue) name
 #SBATCH --nodes=1                           # Run on a single node
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
