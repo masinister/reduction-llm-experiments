@@ -32,9 +32,7 @@ module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; 
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 
-# Reset GPU state
-echo "Resetting GPU state..."
-nvidia-smi --gpu-reset || true
+nvidia-smi -q
 sleep 2
 
 echo "Checking GPU status..."

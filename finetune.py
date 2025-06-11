@@ -1,10 +1,9 @@
 import os
 import argparse
 import torch
-import gc
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForSeq2Seq
-from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 
 def parse_args():
@@ -15,8 +14,8 @@ def parse_args():
                         help="Path to CSV file with reductions")
     parser.add_argument("--output_dir", type=str, default="./fine-tuned",
                         help="Where to save model checkpoints")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=8)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2,
                         help="Accumulate gradients to simulate larger batch sizes")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
@@ -49,8 +48,8 @@ def load_and_prepare(args, tokenizer):
 
     def tokenize_fn(example):
         prompt = (
-            "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
-            "### Input:\nSource: {src}\nTarget: {tgt}\n### Output:\n"
+            "### Instruction:\\nWrite a natural-language LaTeX reduction given source and target.\\n"
+            "### Input:\\nSource: {src}\\nTarget: {tgt}\\n### Output:\\n"
         ).format(src=example['source_text'], tgt=example['target_text'])
         full = prompt + example['reduction_full_text']
         tok = tokenizer(full, truncation=True, max_length=args.max_length, padding='max_length')
@@ -60,51 +59,11 @@ def load_and_prepare(args, tokenizer):
     tokenized = dataset.map(tokenize_fn, batched=False, remove_columns=dataset['train'].column_names)
     return tokenized
 
-def cleanup_cuda():
-    """Enhanced CUDA cleanup function"""
-    if torch.cuda.is_available():
-        try:
-            # Force cleanup of any existing CUDA contexts
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            
-            # Reset all devices
-            for i in range(torch.cuda.device_count()):
-                with torch.cuda.device(i):
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-            
-            # Additional cleanup
-            gc.collect()
-            
-        except Exception as e:
-            print(f"Warning: CUDA cleanup failed: {e}")
-
 def main():
     args = parse_args()
     
-    # Enhanced CUDA cleanup and monitoring
-    cleanup_cuda()
-    
-    # Add delay to allow GPU state to settle
-    import time
-    time.sleep(3)
-    
-    if torch.cuda.is_available():
-        print(f"CUDA available: {torch.cuda.is_available()}")
-        print(f"GPU count: {torch.cuda.device_count()}")
-        if torch.cuda.device_count() > 0:
-            print(f"Current GPU: {torch.cuda.current_device()}")
-            print(f"GPU name: {torch.cuda.get_device_name()}")
-            
-            # Display GPU memory status
-            for i in range(torch.cuda.device_count()):
-                try:
-                    memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
-                    memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
-                    print(f"GPU {i} - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
-                except Exception as e:
-                    print(f"GPU {i} - Unable to query memory: {e}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"GPU count: {torch.cuda.device_count()}")
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -121,7 +80,6 @@ def main():
         args.model_name = cache_dir
         print(f"Downloaded to '{cache_dir}'")
     
-    # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=False)
     
@@ -131,19 +89,15 @@ def main():
         print("Set padding token to EOS token")
     
     print("Loading model...")
-    # Load model with device_map for better memory management
+    # Load model explicitly on CPU - this is key for DeepSpeed with large models
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.bfloat16,  # Use bfloat16 to reduce memory usage
-        low_cpu_mem_usage=True,      # Enable memory-efficient loading
-        device_map=None,             # Let DeepSpeed handle device placement
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map="cpu",  # Force CPU loading
+        use_cache=False,   # Disable cache for training efficiency
     )
-    print("Model loaded successfully")
-    
-    # Ensure model starts on CPU for DeepSpeed
-    if hasattr(model, 'cpu'):
-        model = model.cpu()
-        print("Model moved to CPU for DeepSpeed initialization")
+    print("Model loaded successfully on CPU")
     
     # LoRA setup
     print("Setting up LoRA...")
@@ -151,20 +105,13 @@ def main():
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
         r=args.lora_r,
-        lora_alpha=args.lora_alpha,        lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Explicit target modules
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
     print("LoRA setup complete")
-    
-    # Ensure model starts on CPU for DeepSpeed
-    if hasattr(model, 'cpu'):
-        model = model.cpu()
-        print("Model moved to CPU for DeepSpeed initialization")
-    
-    # Clear any GPU memory before proceeding
-    cleanup_cuda()
-    print("GPU cleanup completed before trainer initialization")
 
     print("Loading and preparing dataset...")
     tokenized_ds = load_and_prepare(args, tokenizer)
@@ -181,21 +128,21 @@ def main():
         num_train_epochs=args.num_train_epochs,
         logging_steps=50,
         save_strategy='epoch',
-        eval_strategy='epoch',  # Updated from evaluation_strategy
+        eval_strategy='epoch',
         save_total_limit=3,
         weight_decay=0.01,
-        bf16=True,  # Use bf16 instead of fp16 for better compatibility
+        bf16=True,
         deepspeed=args.deepspeed_config,
         ddp_find_unused_parameters=False,
         report_to='none',
-        remove_unused_columns=False,  # Better compatibility with custom datasets
-        dataloader_pin_memory=False,  # Reduce memory pressure    )
+        remove_unused_columns=False,
+        dataloader_pin_memory=False,
+        max_grad_norm=1.0,
+        warmup_steps=100,
+        dataloader_num_workers=0,  # Reduce multiprocessing overhead
     )
-    # Add delay to allow GPU state to settle before DeepSpeed initialization
-    import time
-    time.sleep(2)
-    print("Creating trainer with DeepSpeed...")
 
+    print("Creating trainer with DeepSpeed...")
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -205,6 +152,7 @@ def main():
         tokenizer=tokenizer
     )
 
+    print("Starting training...")
     trainer.train()
     trainer.save_model(os.path.join(args.output_dir, 'final'))
     tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))
