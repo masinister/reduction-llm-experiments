@@ -62,15 +62,8 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     
-    # Set memory optimization environment variables
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
-    
-    # Clear any existing CUDA memory
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -94,17 +87,19 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print("Set padding token to EOS token")
+    
     print("Loading model...")
-    # Load model with most aggressive memory optimization for 70B model
+    # Key insight: Don't use device_map or low_cpu_mem_usage with ZeRO Stage 3
+    # Let DeepSpeed handle device placement entirely
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        device_map="cpu",  # Force CPU loading
-        use_cache=False,   # Disable cache for training efficiency
+        torch_dtype=torch.float16,  # Use fp16 for better memory efficiency
+        use_cache=False,           # Disable cache for training efficiency
         trust_remote_code=True,
+        # Don't set device_map - conflicts with DeepSpeed ZeRO Stage 3
+        # Don't set low_cpu_mem_usage - conflicts with DeepSpeed ZeRO Stage 3
     )
-    print("Model loaded successfully on CPU")
+    print("Model loaded successfully")
     
     # LoRA setup
     print("Setting up LoRA...")
@@ -138,7 +133,7 @@ def main():
         eval_strategy='epoch',
         save_total_limit=3,
         weight_decay=0.01,
-        bf16=True,
+        fp16=True,  # Use fp16 to match DeepSpeed config
         deepspeed=args.deepspeed_config,
         ddp_find_unused_parameters=False,
         report_to='none',
@@ -147,9 +142,6 @@ def main():
         max_grad_norm=1.0,
         warmup_steps=100,
         dataloader_num_workers=0,
-        save_on_each_node=False,  # Save only on main process
-        prediction_loss_only=True,  # Reduce eval memory usage
-        eval_accumulation_steps=1,  # Reduce eval memory
     )
 
     print("Creating trainer with DeepSpeed...")
