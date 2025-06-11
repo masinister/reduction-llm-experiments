@@ -1,6 +1,6 @@
 {
-  "train_batch_size": 32,
-  "train_micro_batch_size_per_gpu": 4,
+  "train_batch_size": 4,
+  "train_micro_batch_size_per_gpu": 1,
   "gradient_accumulation_steps": 2,
   "steps_per_print": 100,
   "optimizer": {
@@ -18,7 +18,7 @@
     "initial_scale_power": 16
   },
   "zero_optimization": {
-    "stage": 2,
+    "stage": 3,
     "allgather_partitions": true,
     "allgather_bucket_size": 5e8,
     "reduce_scatter": true,

@@ -103,8 +103,7 @@ def main():
         cache_dir = snapshot_download(repo_id=repo_id)
         args.model_name = cache_dir
         print(f"Downloaded to '{cache_dir}'")
-    
-    # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
+      # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=False)
     
@@ -116,8 +115,8 @@ def main():
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype="auto",
-        # Note: No device_map when using distributed training with torchrun
+        torch_dtype=torch.bfloat16,  # Use bfloat16 to reduce memory usage
+        low_cpu_mem_usage=True,      # Enable memory-efficient loading
     )
     print("Model loaded successfully")
     
@@ -146,7 +145,7 @@ def main():
         num_train_epochs=args.num_train_epochs,
         logging_steps=50,
         save_strategy='epoch',
-        evaluation_strategy='epoch',
+        eval_strategy='epoch',  # Updated from evaluation_strategy
         save_total_limit=3,
         weight_decay=0.01,
         fp16=True,

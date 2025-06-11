@@ -2,13 +2,13 @@
 #SBATCH --job-name=llama_finetune           # Job name
 #SBATCH --output=logs/finetune_%j.out       # Standard output and error log
 #SBATCH --error=logs/finetune_%j.err
-#SBATCH --partition=short                   # Partition (queue) name
+#SBATCH --partition=short                    # Partition (queue) name
 #SBATCH --nodes=1                           # Run on a single node
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
-#SBATCH --gres=gpu:4                        # Number of GPUs per node
-#SBATCH --mem=128G                          # Total memory per node (128GB)
-#SBATCH --time=24:00:00                     # Time limit hrs:min:sec
+#SBATCH --gres=gpu:2                        # Number of GPUs per node (max allowed)
+#SBATCH --mem=200G                          # Total memory per node (increased for 70B model)
+#SBATCH --time=24:00:00                     # Time limit hrs:min:sec (1 day max for short)
 
 # Enable strict error handling
 set -e
@@ -31,6 +31,12 @@ module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; 
 
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
+
+# Clean up any existing processes that might be using GPUs
+echo "Cleaning up existing processes..."
+pkill -f "torchrun" || true
+pkill -f "finetune.py" || true
+sleep 2
 
 echo "Checking GPU status..."
 nvidia-smi || { echo "nvidia-smi failed"; exit 1; }
@@ -76,8 +82,8 @@ else
         echo "Warning: nvidia-smi query failed, trying device count..."
         NUM_GPUS=$(nvidia-smi -L | wc -l)
         if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
-            echo "Warning: Could not determine GPU count, defaulting to 4"
-            NUM_GPUS=4
+            echo "Warning: Could not determine GPU count, defaulting to 2"
+            NUM_GPUS=2
         fi
     fi
 fi
@@ -93,8 +99,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \
   --output_dir $OUTPUT_DIR \
-  --per_device_train_batch_size 4 \
-  --per_device_eval_batch_size 4 \
+  --per_device_train_batch_size 1 \
+  --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 2 \
   --learning_rate 1e-4 \
   --num_train_epochs 20 \
