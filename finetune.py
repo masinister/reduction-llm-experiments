@@ -102,7 +102,9 @@ def main():
         repo_id = args.model_name
         cache_dir = snapshot_download(repo_id=repo_id)
         args.model_name = cache_dir
-        print(f"Downloaded to '{cache_dir}'")    # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
+        print(f"Downloaded to '{cache_dir}'")
+    
+    # Launch with torchrun for multi-GPU: torchrun --nproc_per_node=N fine_tune.py ...
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=False)
     
@@ -114,10 +116,12 @@ def main():
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        device_map='auto',  # will be overridden by DDP
-        torch_dtype="auto"
+        torch_dtype="auto",
+        # Note: No device_map when using distributed training with torchrun
     )
-    print("Model loaded successfully")    # LoRA setup
+    print("Model loaded successfully")
+    
+    # LoRA setup
     print("Setting up LoRA...")
     peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
                              inference_mode=False,
