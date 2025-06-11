@@ -10,23 +10,59 @@
 #SBATCH --mem=128G                          # Total memory per node (128GB)
 #SBATCH --time=24:00:00                     # Time limit hrs:min:sec
 
+# Enable strict error handling
+set -e
+set -x
+
+echo "Starting job at $(date)"
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+
+# Create log directory first (before SBATCH tries to write to it)
+mkdir -p logs
+echo "Created logs directory"
+
 # Load modules if necessary (e.g., python, cuda)
-module load python/3.11.10
+echo "Loading Python module..."
+module load python/3.11.10 || { echo "Failed to load Python module"; exit 1; }
 
-module load cuda/12.4.0/3mdaov5
+echo "Loading CUDA module..."
+module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; }
 
-source ~/venvs/reductions/bin/activate
+echo "Activating virtual environment..."
+source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 
-nvidia-smi
+echo "Checking GPU status..."
+nvidia-smi || { echo "nvidia-smi failed"; exit 1; }
 
 # Create log directory
 mkdir -p logs
+
+echo "Checking Python availability..."
+which python3 || echo "python3 not found"
+which python || echo "python not found"
+
+echo "Checking environment variables..."
+echo "SLURM_GPUS_PER_NODE: $SLURM_GPUS_PER_NODE"
+echo "Current directory: $(pwd)"
+echo "Files in current directory:"
+ls -la
 
 MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
 CSV_PATH="~/data/karp.csv"
 OUTPUT_DIR="./llama_finetune/"
 DEEPSPEED_CONFIG="deepspeed-config.json"
 
+echo "Checking if files exist..."
+ls -la finetune.py || { echo "finetune.py not found"; exit 1; }
+ls -la $DEEPSPEED_CONFIG || { echo "DeepSpeed config not found"; exit 1; }
+
+echo "Expanding CSV path..."
+EXPANDED_CSV_PATH=$(eval echo $CSV_PATH)
+echo "CSV path: $EXPANDED_CSV_PATH"
+ls -la $EXPANDED_CSV_PATH || { echo "CSV file not found at $EXPANDED_CSV_PATH"; exit 1; }
+
+echo "Starting torchrun with $SLURM_GPUS_PER_NODE GPUs..."
 torchrun --nproc_per_node=$SLURM_GPUS_PER_NODE \
   finetune.py \
   --model_name $MODEL_NAME \
@@ -41,4 +77,4 @@ torchrun --nproc_per_node=$SLURM_GPUS_PER_NODE \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
   --max_length 1024 \
-  --deepspeed_config $DEEPSPEED_CONFIG \
+  --deepspeed_config $DEEPSPEED_CONFIG
