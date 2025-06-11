@@ -44,6 +44,8 @@ which python || echo "python not found"
 
 echo "Checking environment variables..."
 echo "SLURM_GPUS_PER_NODE: $SLURM_GPUS_PER_NODE"
+echo "SLURM_GPUS: $SLURM_GPUS"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "Current directory: $(pwd)"
 echo "Files in current directory:"
 ls -la
@@ -62,8 +64,23 @@ EXPANDED_CSV_PATH=$(eval echo $CSV_PATH)
 echo "CSV path: $EXPANDED_CSV_PATH"
 ls -la $EXPANDED_CSV_PATH || { echo "CSV file not found at $EXPANDED_CSV_PATH"; exit 1; }
 
-echo "Starting torchrun with $SLURM_GPUS_PER_NODE GPUs..."
-torchrun --nproc_per_node=$SLURM_GPUS_PER_NODE \
+# Determine number of GPUs to use
+if [ -n "$SLURM_GPUS_PER_NODE" ] && [ "$SLURM_GPUS_PER_NODE" != "" ]; then
+    NUM_GPUS=$SLURM_GPUS_PER_NODE
+elif [ -n "$SLURM_GPUS" ] && [ "$SLURM_GPUS" != "" ]; then
+    NUM_GPUS=$SLURM_GPUS
+else
+    # Fallback: count available GPUs
+    NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
+    if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
+        echo "Warning: Could not determine GPU count, defaulting to 4"
+        NUM_GPUS=4
+    fi
+fi
+
+echo "Using $NUM_GPUS GPUs for training"
+echo "Starting torchrun with $NUM_GPUS GPUs..."
+torchrun --nproc_per_node=$NUM_GPUS \
   finetune.py \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \
