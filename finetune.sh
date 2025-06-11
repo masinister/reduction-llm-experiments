@@ -89,10 +89,7 @@ fi
 echo "Using $NUM_GPUS GPUs for training"
 
 # Set CUDA environment variables for memory optimization
-export CUDA_LAUNCH_BLOCKING=1
-export CUDA_DEVICE_MAX_CONNECTIONS=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export TORCH_CUDA_ARCH_LIST="8.0"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
 
 echo "Starting torchrun with $NUM_GPUS GPUs..."
 torchrun --nproc_per_node=$NUM_GPUS \

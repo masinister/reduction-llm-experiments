@@ -89,18 +89,14 @@ def main():
         print("Set padding token to EOS token")
     
     print("Loading model...")
-    # Key insight: Don't use device_map or low_cpu_mem_usage with ZeRO Stage 3
-    # Let DeepSpeed handle device placement entirely
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.float16,  # Use fp16 for better memory efficiency
         use_cache=False,           # Disable cache for training efficiency
         trust_remote_code=True,
-        # Don't set device_map - conflicts with DeepSpeed ZeRO Stage 3
-        # Don't set low_cpu_mem_usage - conflicts with DeepSpeed ZeRO Stage 3
     )
     print("Model loaded successfully")
-    
+        
     # LoRA setup
     print("Setting up LoRA...")
     peft_config = LoraConfig(
@@ -111,6 +107,11 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
+    
+    pritnln("Emptying cache")
+    torch.cuda.empty_cache()
+    
+
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print("LoRA setup complete")
