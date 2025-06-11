@@ -94,7 +94,6 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print("Set padding token to EOS token")
-    
     print("Loading model...")
     # Load model with most aggressive memory optimization for 70B model
     model = AutoModelForCausalLM.from_pretrained(
@@ -104,7 +103,6 @@ def main():
         device_map="cpu",  # Force CPU loading
         use_cache=False,   # Disable cache for training efficiency
         trust_remote_code=True,
-        attn_implementation="flash_attention_2",  # Use Flash Attention for memory efficiency
     )
     print("Model loaded successfully on CPU")
     
