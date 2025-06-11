@@ -7,6 +7,7 @@
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
 #SBATCH --gres=gpu:2                        # Number of GPUs per node (max allowed)
+#SBATCH -C A100                             # Specify GPU type (A100)
 #SBATCH --mem=400G                          # Total memory per node (increased for 70B model)
 #SBATCH --time=24:00:00                     # Time limit hrs:min:sec (1 day max for short)
 
@@ -88,10 +89,10 @@ fi
 echo "Using $NUM_GPUS GPUs for training"
 
 # Set CUDA environment variables for memory optimization
-# export CUDA_LAUNCH_BLOCKING=1
-# export CUDA_DEVICE_MAX_CONNECTIONS=1
-# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# export TORCH_CUDA_ARCH_LIST="8.0"
+export CUDA_LAUNCH_BLOCKING=1
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TORCH_CUDA_ARCH_LIST="8.0"
 
 echo "Starting torchrun with $NUM_GPUS GPUs..."
 torchrun --nproc_per_node=$NUM_GPUS \
