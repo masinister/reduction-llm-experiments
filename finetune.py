@@ -139,7 +139,7 @@ def main():
         dataloader_pin_memory=False,
         max_grad_norm=1.0,
         warmup_steps=100,
-        dataloader_num_workers=0,  # Reduce multiprocessing overhead
+        dataloader_num_workers=0,
     )
 
     print("Creating trainer with DeepSpeed...")
@@ -149,7 +149,7 @@ def main():
         train_dataset=tokenized_ds['train'],
         eval_dataset=tokenized_ds['validation'],
         data_collator=data_collator,
-        tokenizer=tokenizer
+        processing_class=tokenizer  # Use processing_class instead of tokenizer
     )
 
     print("Starting training...")
