@@ -60,31 +60,37 @@ def load_and_prepare(args, tokenizer):
     tokenized = dataset.map(tokenize_fn, batched=False, remove_columns=dataset['train'].column_names)
     return tokenized
 
-def main():
-    args = parse_args()
-      # Clear any existing CUDA cache and reset GPU state
+def cleanup_cuda():
+    """Enhanced CUDA cleanup function"""
     if torch.cuda.is_available():
-        # Force cleanup of any existing CUDA contexts
         try:
-            # More aggressive cleanup
+            # Force cleanup of any existing CUDA contexts
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-            torch.cuda.ipc_collect()  # Clean up inter-process communication
             
             # Reset all devices
             for i in range(torch.cuda.device_count()):
-                torch.cuda.set_device(i)
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            torch.cuda.set_device(0)  # Reset to device 0
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
             
             # Additional cleanup
-            import gc
             gc.collect()
             
         except Exception as e:
             print(f"Warning: CUDA cleanup failed: {e}")
-        
+
+def main():
+    args = parse_args()
+    
+    # Enhanced CUDA cleanup and monitoring
+    cleanup_cuda()
+    
+    # Add delay to allow GPU state to settle
+    import time
+    time.sleep(3)
+    
+    if torch.cuda.is_available():
         print(f"CUDA available: {torch.cuda.is_available()}")
         print(f"GPU count: {torch.cuda.device_count()}")
         if torch.cuda.device_count() > 0:
@@ -99,10 +105,6 @@ def main():
                     print(f"GPU {i} - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
                 except Exception as e:
                     print(f"GPU {i} - Unable to query memory: {e}")
-    
-    # Add delay to allow GPU state to settle
-    import time
-    time.sleep(2)
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -129,22 +131,40 @@ def main():
         print("Set padding token to EOS token")
     
     print("Loading model...")
+    # Load model with device_map for better memory management
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16,  # Use bfloat16 to reduce memory usage
         low_cpu_mem_usage=True,      # Enable memory-efficient loading
+        device_map=None,             # Let DeepSpeed handle device placement
     )
     print("Model loaded successfully")
     
+    # Ensure model starts on CPU for DeepSpeed
+    if hasattr(model, 'cpu'):
+        model = model.cpu()
+        print("Model moved to CPU for DeepSpeed initialization")
+    
     # LoRA setup
     print("Setting up LoRA...")
-    peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
-                             inference_mode=False,
-                             r=args.lora_r,
-                             lora_alpha=args.lora_alpha,
-                             lora_dropout=args.lora_dropout)
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,        lora_dropout=args.lora_dropout,
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Explicit target modules
+    )
     model = get_peft_model(model, peft_config)
     print("LoRA setup complete")
+    
+    # Ensure model starts on CPU for DeepSpeed
+    if hasattr(model, 'cpu'):
+        model = model.cpu()
+        print("Model moved to CPU for DeepSpeed initialization")
+    
+    # Clear any GPU memory before proceeding
+    cleanup_cuda()
+    print("GPU cleanup completed before trainer initialization")
 
     print("Loading and preparing dataset...")
     tokenized_ds = load_and_prepare(args, tokenizer)
@@ -164,11 +184,17 @@ def main():
         eval_strategy='epoch',  # Updated from evaluation_strategy
         save_total_limit=3,
         weight_decay=0.01,
-        fp16=True,
+        bf16=True,  # Use bf16 instead of fp16 for better compatibility
         deepspeed=args.deepspeed_config,
         ddp_find_unused_parameters=False,
-        report_to='none'
+        report_to='none',
+        remove_unused_columns=False,  # Better compatibility with custom datasets
+        dataloader_pin_memory=False,  # Reduce memory pressure    )
     )
+    # Add delay to allow GPU state to settle before DeepSpeed initialization
+    import time
+    time.sleep(2)
+    print("Creating trainer with DeepSpeed...")
 
     trainer = Trainer(
         model=model,
