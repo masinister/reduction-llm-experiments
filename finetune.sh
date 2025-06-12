@@ -91,8 +91,8 @@ echo "Using $NUM_GPUS GPUs for training"
 # Set CUDA environment variables for memory optimization
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
 
-echo "Starting torchrun with $NUM_GPUS GPUs..."
-torchrun --nproc_per_node=$NUM_GPUS \
+echo "Starting DeepSpeed with $NUM_GPUS GPUs..."
+deepspeed --num_gpus=$NUM_GPUS \
   finetune.py \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \

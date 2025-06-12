@@ -108,7 +108,7 @@ def main():
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     
-    println("Emptying cache")
+    print("Emptying cache")
     torch.cuda.empty_cache()
     
 
@@ -143,6 +143,8 @@ def main():
         max_grad_norm=1.0,
         warmup_steps=100,
         dataloader_num_workers=0,
+        gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
+        skip_memory_metrics=True,     # Skip memory metrics to avoid overhead
     )
 
     print("Creating trainer with DeepSpeed...")
