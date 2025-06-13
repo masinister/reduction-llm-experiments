@@ -2,13 +2,13 @@
 #SBATCH --job-name=llama_finetune           # Job name
 #SBATCH --output=logs/finetune_%j.out       # Standard output and error log
 #SBATCH --error=logs/finetune_%j.err
-#SBATCH --partition=short                    # Partition (queue) name
+#SBATCH --partition=short                   # Partition (queue) name
 #SBATCH --nodes=1                           # Run on a single node
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
 #SBATCH --gres=gpu:2                        # Number of GPUs per node (max allowed)
-#SBATCH -C A100                             # Specify GPU type (A100)
-#SBATCH --mem=400G                          # Total memory per node (increased for 70B model)
+#SBATCH --constraint=A100                   # Specify GPU type (A100)
+#SBATCH --mem=200G                          # Total memory per node
 #SBATCH --time=24:00:00                     # Time limit hrs:min:sec (1 day max for short)
 
 # Enable strict error handling
@@ -68,31 +68,11 @@ EXPANDED_CSV_PATH=$(eval echo $CSV_PATH)
 echo "CSV path: $EXPANDED_CSV_PATH"
 ls -la $EXPANDED_CSV_PATH || { echo "CSV file not found at $EXPANDED_CSV_PATH"; exit 1; }
 
-# Determine number of GPUs to use
-if [ -n "$SLURM_GPUS_PER_NODE" ] && [ "$SLURM_GPUS_PER_NODE" != "" ]; then
-    NUM_GPUS=$SLURM_GPUS_PER_NODE
-elif [ -n "$SLURM_GPUS" ] && [ "$SLURM_GPUS" != "" ]; then
-    NUM_GPUS=$SLURM_GPUS
-else
-    # Fallback: count available GPUs using multiple methods
-    NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
-    if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
-        echo "Warning: nvidia-smi query failed, trying device count..."
-        NUM_GPUS=$(nvidia-smi -L | wc -l)
-        if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "" ]; then
-            echo "Warning: Could not determine GPU count, defaulting to 2"
-            NUM_GPUS=2
-        fi
-    fi
-fi
-
-echo "Using $NUM_GPUS GPUs for training"
-
 # Set CUDA environment variables for memory optimization
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
 
-echo "Starting DeepSpeed with $NUM_GPUS GPUs..."
-deepspeed --num_gpus=$NUM_GPUS \
+echo "Starting DeepSpeed..."
+deepspeed \
   finetune.py \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \

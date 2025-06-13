@@ -31,10 +31,8 @@ def parse_args():
     return parser.parse_args()
 
 def load_and_prepare(args, tokenizer):
-    # Expand the CSV path if it starts with ~
     csv_path = os.path.expanduser(args.csv_path)
     
-    # Check if the CSV file exists
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
     
@@ -54,7 +52,7 @@ def load_and_prepare(args, tokenizer):
             "### Input:\\nSource: {src}\\nTarget: {tgt}\\n### Output:\\n"
         ).format(src=example['source_text'], tgt=example['target_text'])
         full = prompt + example['reduction_full_text']
-        tok = tokenizer(full, truncation=True, max_length=args.max_length, padding='max_length')
+        tok = tokenizer(full, truncation=True, max_length=args.max_length, padding=False)
         tok['labels'] = tok['input_ids'].copy()
         return tok
 
@@ -71,7 +69,6 @@ def main():
     for arg, value in vars(args).items():
         print(f"  {arg}: {value}")
 
-    # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Ensure model is available locally: download from HF if needed
@@ -83,23 +80,12 @@ def main():
         print(f"Downloaded to '{cache_dir}'")
     
     print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=False)
-    
-    # Set padding token if not already set
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print("Set padding token to EOS token")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     
     print("Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        torch_dtype=torch.float16,  # Use fp16 for better memory efficiency
-        use_cache=False,           # Disable cache for training efficiency
-        trust_remote_code=True,
-    )
+    model = AutoModelForCausalLM.from_pretrained(args.model_name)
     print("Model loaded successfully")
         
-    # LoRA setup
     print("Setting up LoRA...")
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -109,10 +95,6 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    
-    print("Emptying cache")
-    torch.cuda.empty_cache()
-    
 
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
@@ -136,17 +118,8 @@ def main():
         eval_strategy='epoch',
         save_total_limit=3,
         weight_decay=0.01,
-        fp16=True,  # Use fp16 to match DeepSpeed config
-        deepspeed=args.deepspeed_config,
-        ddp_find_unused_parameters=False,
-        report_to='none',
-        remove_unused_columns=False,
-        dataloader_pin_memory=False,
-        max_grad_norm=1.0,
-        warmup_steps=100,
-        dataloader_num_workers=0,
-        gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
-        skip_memory_metrics=True,     # Skip memory metrics to avoid overhead
+        fp16=True,
+        deepspeed=args.deepspeed_config
     )
 
     print("Creating trainer with DeepSpeed...")
@@ -156,7 +129,7 @@ def main():
         train_dataset=tokenized_ds['train'],
         eval_dataset=tokenized_ds['validation'],
         data_collator=data_collator,
-        processing_class=tokenizer  # Use processing_class instead of tokenizer
+        processing_class=tokenizer
     )
 
     print("Starting training...")
