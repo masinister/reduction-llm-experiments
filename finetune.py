@@ -78,9 +78,14 @@ def main():
         cache_dir = snapshot_download(repo_id=repo_id)
         args.model_name = cache_dir
         print(f"Downloaded to '{cache_dir}'")
-    
+
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    
+    # Set padding token if not already set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
     
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(args.model_name)
@@ -119,7 +124,8 @@ def main():
         save_total_limit=3,
         weight_decay=0.01,
         fp16=True,
-        deepspeed=args.deepspeed_config
+        deepspeed=args.deepspeed_config,
+        label_names=["labels"]
     )
 
     print("Creating trainer with DeepSpeed...")
