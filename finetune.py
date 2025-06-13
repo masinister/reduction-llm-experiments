@@ -26,6 +26,8 @@ def parse_args():
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--deepspeed_config", type=str, default=None,
                         help="Path to a DeepSpeed config JSON for ZeRO or FP16")
+    parser.add_argument("--local_rank", type=int, default=-1,
+                        help="Local rank for distributed training (automatically set by DeepSpeed)")
     return parser.parse_args()
 
 def load_and_prepare(args, tokenizer):
