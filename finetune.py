@@ -1,4 +1,8 @@
 import os
+
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+os.environ["TORCH_USE_DTENSOR"]     = "0"
+
 import argparse
 import torch
 import json
