@@ -1,6 +1,7 @@
 import os
 import argparse
 import torch
+import json
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForSeq2Seq
 from peft import get_peft_model, LoraConfig, TaskType
@@ -59,6 +60,68 @@ def load_and_prepare(args, tokenizer):
     tokenized = dataset.map(tokenize_fn, batched=False, remove_columns=dataset['train'].column_names)
     return tokenized
 
+def run_inference(model, tokenizer, test_dataset, original_test_data, args):
+    """Run inference on the test set and save results to JSON"""
+    print("Starting inference on test set...")
+    
+    model.eval()
+    results = []
+    
+    for i, (test_example, original_example) in enumerate(zip(test_dataset, original_test_data)):
+        print(f"Processing test example {i+1}/{len(test_dataset)}")
+        
+        # Create the prompt (same format as training)
+        prompt = (
+            "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
+            "### Input:\nSource: {src}\nTarget: {tgt}\n### Output:\n"
+        ).format(src=original_example['source_text'], tgt=original_example['target_text'])
+        
+        # Tokenize the prompt
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
+        
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            inputs = {k: v.cuda() for k, v in inputs.items()}
+            model = model.cuda()
+        
+        # Generate response
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+        
+        # Decode the generated text
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract only the generated part (remove the prompt)
+        generated_reduction = generated_text[len(prompt):].strip()
+        
+        # Store the result
+        result = {
+            "index": i,
+            "source_text": original_example['source_text'],
+            "target_text": original_example['target_text'],
+            "ground_truth_reduction": original_example['reduction_full_text'],
+            "generated_reduction": generated_reduction,
+            "prompt": prompt
+        }
+        results.append(result)
+    
+    # Save results to JSON file
+    output_file = os.path.join(args.output_dir, 'inference_results.json')
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    
+    print(f"Inference results saved to: {output_file}")
+    print(f"Generated predictions for {len(results)} test examples")
+    
+    return results
+
 def main():
     args = parse_args()
     
@@ -109,6 +172,12 @@ def main():
     tokenized_ds = load_and_prepare(args, tokenizer)
     print(f"Dataset loaded. Train: {len(tokenized_ds['train'])}, Validation: {len(tokenized_ds['validation'])}, Test: {len(tokenized_ds['test'])}")
 
+    # Keep original test data for inference
+    csv_path = os.path.expanduser(args.csv_path)
+    raw = load_dataset("csv", data_files=csv_path, split="train")
+    split1 = raw.train_test_split(test_size=0.2, seed=42)
+    original_test_data = split1['test']
+
     data_collator = DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, return_tensors='pt')
 
     training_args = TrainingArguments(
@@ -142,6 +211,25 @@ def main():
     trainer.train()
     trainer.save_model(os.path.join(args.output_dir, 'final'))
     tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))
+
+    # Run inference on test set
+    print("\n" + "="*50)
+    print("TRAINING COMPLETE - STARTING INFERENCE")
+    print("="*50)
+    
+    # Load the final trained model for inference
+    final_model_path = os.path.join(args.output_dir, 'final')
+    print(f"Loading final model from: {final_model_path}")
+    
+    # For inference, we need to load the model in inference mode
+    inference_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    inference_model = get_peft_model(inference_model, peft_config)
+    inference_model.load_adapter(final_model_path, adapter_name="default")
+    
+    # Run inference
+    inference_results = run_inference(inference_model, tokenizer, tokenized_ds['test'], original_test_data, args)
+    
+    print(f"\nInference complete! Results saved to {os.path.join(args.output_dir, 'inference_results.json')}")
 
 if __name__ == '__main__':
     main()
