@@ -1,8 +1,4 @@
 import os
-
-os.environ["TORCHDYNAMO_DISABLE"] = "1"
-os.environ["TORCH_USE_DTENSOR"]     = "0"
-
 import argparse
 import torch
 import json
@@ -211,9 +207,6 @@ def main():
     
     # Load model with memory optimizations and DeepSpeed synergy
     model_kwargs = {
-        "device_map": "auto",
-        "offload_folder": "offload",
-        "offload_state_dict": True,
         "torch_dtype": model_dtype,
         "low_cpu_mem_usage": True,
         "trust_remote_code": True,
@@ -279,7 +272,7 @@ def main():
         eval_steps=500,
         logging_first_step=True,
         # Additional memory savings
-        load_best_model_at_end=False,  # Don't load best model to save memory
+        load_best_model_at_end=False,
         metric_for_best_model=None,
         greater_is_better=None,
         # Reduce memory usage during evaluation
