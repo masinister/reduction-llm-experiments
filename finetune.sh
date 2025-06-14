@@ -39,9 +39,6 @@ sleep 2
 echo "Checking GPU status..."
 nvidia-smi || { echo "nvidia-smi failed"; exit 1; }
 
-# Create log directory
-mkdir -p logs
-
 echo "Checking Python availability..."
 which python3 || echo "python3 not found"
 which python || echo "python not found"
@@ -75,6 +72,9 @@ ls -la $EXPANDED_CSV_PATH || { echo "CSV file not found at $EXPANDED_CSV_PATH"; 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
 export NCCL_P2P_DISABLE=1  # Disable P2P for memory efficiency
 export NCCL_IB_DISABLE=1   # Disable InfiniBand if causing issues
+export CUDA_LAUNCH_BLOCKING=0  # Enable async CUDA operations
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error handling
+export OMP_NUM_THREADS=8  # Limit OpenMP threads to reduce CPU memory
 
 echo "Memory optimization environment variables set:"
 echo "PYTORCH_CUDA_ALLOC_CONF: $PYTORCH_CUDA_ALLOC_CONF"
@@ -82,6 +82,9 @@ echo "NCCL_P2P_DISABLE: $NCCL_P2P_DISABLE"
 echo "NCCL_IB_DISABLE: $NCCL_IB_DISABLE"
 
 echo "Starting DeepSpeed with optimized memory settings..."
+echo "Command to be executed:"
+echo "deepspeed finetune.py --model_name $MODEL_NAME --csv_path $CSV_PATH --output_dir $OUTPUT_DIR --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 16 --learning_rate 1e-4 --num_train_epochs 3 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 --max_length 2048 --model_dtype bfloat16 --cpu_offload --deepspeed_config $DEEPSPEED_CONFIG"
+echo ""
 deepspeed \
   finetune.py \
   --model_name $MODEL_NAME \
@@ -89,13 +92,15 @@ deepspeed \
   --output_dir $OUTPUT_DIR \
   --per_device_train_batch_size 1 \
   --per_device_eval_batch_size 1 \
-  --gradient_accumulation_steps 8 \
+  --gradient_accumulation_steps 16 \
   --learning_rate 1e-4 \
   --num_train_epochs 3 \
   --lora_r 8 \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
-  --max_length 4096 \
+  --max_length 2048 \
+  --model_dtype bfloat16 \
+  --cpu_offload \
   --deepspeed_config $DEEPSPEED_CONFIG
 
 echo "Fine-tuning job completed at $(date)"

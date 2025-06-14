@@ -2,10 +2,27 @@ import os
 import argparse
 import torch
 import json
+import gc  # For garbage collection
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForSeq2Seq
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
+
+def clear_memory():
+    """Clear GPU and system memory"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
+
+def print_memory_usage():
+    """Print current memory usage"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        print(f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+    else:
+        print("CUDA not available")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune LLaMA on reduction dataset with LoRA and multi-GPU support")
@@ -33,6 +50,11 @@ def parse_args():
                         help="Path to a DeepSpeed config JSON for ZeRO or FP16")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="Local rank for distributed training (automatically set by DeepSpeed)")
+    parser.add_argument("--model_dtype", type=str, default="bfloat16", 
+                        choices=["float16", "bfloat16", "float32"],
+                        help="Model data type for memory efficiency (default: bfloat16)")
+    parser.add_argument("--cpu_offload", action="store_true",
+                        help="Enable CPU offloading for even more memory savings")
     return parser.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -79,14 +101,15 @@ def run_inference(model, tokenizer, test_dataset, original_test_data, args):
             "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
             "### Input:\nSource: {src}\nTarget: {tgt}\n### Output:\n"
         ).format(src=original_example['source_text'], tgt=original_example['target_text'])
-        
-        # Tokenize the prompt
+          # Tokenize the prompt
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
         
-        # Move to GPU if available
-        if torch.cuda.is_available():
-            inputs = {k: v.cuda() for k, v in inputs.items()}
-            model = model.cuda()
+        # Move inputs to the same device as the model
+        if hasattr(model, 'device'):
+            device = model.device
+        else:
+            device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         
         # Generate response
         with torch.no_grad():
@@ -143,12 +166,15 @@ def setup_deepspeed_config(args):
 
 def main():
     args = parse_args()
-    
-    # Setup DeepSpeed configuration
+      # Setup DeepSpeed configuration
     args = setup_deepspeed_config(args)
     
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
+    print_memory_usage()
+    
+    # Clear memory before starting
+    clear_memory()
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -165,18 +191,48 @@ def main():
         print(f"Downloaded to '{cache_dir}'")
 
     print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-      # Set padding token if not already set
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)    # Set padding token if not already set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
     
-    print("Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    print("Loading model with memory optimizations...")
+    
+    # Determine the model dtype
+    dtype_map = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32
+    }
+    model_dtype = dtype_map[args.model_dtype]
+    print(f"Using model dtype: {args.model_dtype}")
+    
+    # Load model with memory optimizations
+    model_kwargs = {
+        "torch_dtype": model_dtype,
+        "low_cpu_mem_usage": True,
+        "trust_remote_code": True,
+    }
+    
+    # Add device mapping if not using CPU offload
+    if not args.cpu_offload:
+        model_kwargs["device_map"] = "auto"
+    
+    # Try to use flash attention if available
+    try:
+        model_kwargs["attn_implementation"] = "flash_attention_2"
+        print("Using Flash Attention 2")
+    except:
+        print("Flash Attention 2 not available, using default attention")
+    
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
     
     # Enable gradient checkpointing for memory efficiency
-    model.gradient_checkpointing_enable()
-    print("Gradient checkpointing enabled")
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+        print("Gradient checkpointing enabled")
+    else:
+        print("Warning: Model does not support gradient checkpointing")
     
     print("Model loaded successfully")
         
@@ -193,6 +249,10 @@ def main():
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print("LoRA setup complete")
+    
+    # Clear memory after model setup
+    clear_memory()
+    print_memory_usage()
 
     print("Loading and preparing dataset...")
     tokenized_ds = load_and_prepare(args, tokenizer)
@@ -216,9 +276,9 @@ def main():
         logging_steps=50,
         save_strategy='epoch',
         eval_strategy='epoch',
-        save_total_limit=3,
+        save_total_limit=2,  # Reduced from 3 to save disk space
         weight_decay=0.01,
-        fp16=True,
+        bf16=True,  # Use bfloat16 instead of fp16 for better stability
         deepspeed=args.deepspeed_config,
         label_names=["labels"],
         # Additional memory optimizations
@@ -229,7 +289,15 @@ def main():
         max_grad_norm=1.0,
         # Reduce eval frequency to save memory
         eval_steps=500,
-        logging_first_step=True
+        logging_first_step=True,
+        # Additional memory savings
+        save_safetensors=True,
+        load_best_model_at_end=False,  # Don't load best model to save memory
+        metric_for_best_model=None,
+        greater_is_better=None,
+        # Reduce memory usage during evaluation
+        prediction_loss_only=True,
+        include_inputs_for_metrics=False
     )
 
     print("Creating trainer with DeepSpeed...")
@@ -244,25 +312,25 @@ def main():
 
     print("Starting training...")
     trainer.train()
+    
+    # Clear memory after training
+    clear_memory()
+    print_memory_usage()
+    
     trainer.save_model(os.path.join(args.output_dir, 'final'))
-    tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))
-
-    # Run inference on test set
+    tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))# Run inference on test set
     print("\n" + "="*50)
     print("TRAINING COMPLETE - STARTING INFERENCE")
     print("="*50)
     
-    # Load the final trained model for inference
-    final_model_path = os.path.join(args.output_dir, 'final')
-    print(f"Loading final model from: {final_model_path}")
+    # Use the already trained model for inference (no need to reload)
+    print("Using trained model for inference...")
     
-    # For inference, we need to load the model in inference mode
-    inference_model = AutoModelForCausalLM.from_pretrained(args.model_name)
-    inference_model = get_peft_model(inference_model, peft_config)
-    inference_model.load_adapter(final_model_path, adapter_name="default")
+    # Set model to evaluation mode
+    model.eval()
     
     # Run inference
-    inference_results = run_inference(inference_model, tokenizer, tokenized_ds['test'], original_test_data, args)
+    inference_results = run_inference(model, tokenizer, tokenized_ds['test'], original_test_data, args)
     
     print(f"\nInference complete! Results saved to {os.path.join(args.output_dir, 'inference_results.json')}")
 
