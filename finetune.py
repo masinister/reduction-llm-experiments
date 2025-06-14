@@ -15,16 +15,20 @@ def parse_args():
                         help="Path to CSV file with reductions")
     parser.add_argument("--output_dir", type=str, default="./fine-tuned",
                         help="Where to save model checkpoints")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=1)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2,
-                        help="Accumulate gradients to simulate larger batch sizes")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1,
+                        help="Batch size per device during training (set to 1 for memory efficiency)")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=1,
+                        help="Batch size per device during evaluation")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8,
+                        help="Accumulate gradients to simulate larger batch sizes (effective batch = batch_size * accumulation * num_gpus)")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--num_train_epochs", type=int, default=20)
+    parser.add_argument("--num_train_epochs", type=int, default=3,
+                        help="Reduced default epochs for memory efficiency")
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA rank")
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
-    parser.add_argument("--max_length", type=int, default=1024)
+    parser.add_argument("--max_length", type=int, default=512,
+                        help="Reduced max length for memory efficiency")
     parser.add_argument("--deepspeed_config", type=str, default=None,
                         help="Path to a DeepSpeed config JSON for ZeRO or FP16")
     parser.add_argument("--local_rank", type=int, default=-1,
@@ -122,8 +126,26 @@ def run_inference(model, tokenizer, test_dataset, original_test_data, args):
     
     return results
 
+def setup_deepspeed_config(args):
+    """Setup DeepSpeed configuration with ZeRO-3 if no config provided"""
+    if args.deepspeed_config is None:
+        # Use the default ZeRO-3 config
+        default_config = "deepspeed-config.json"
+        if os.path.exists(default_config):
+            args.deepspeed_config = default_config
+            print(f"Using default DeepSpeed config: {default_config}")
+        else:
+            print("Warning: No DeepSpeed config found. Training without DeepSpeed.")
+    else:
+        print(f"Using provided DeepSpeed config: {args.deepspeed_config}")
+    
+    return args
+
 def main():
     args = parse_args()
+    
+    # Setup DeepSpeed configuration
+    args = setup_deepspeed_config(args)
     
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
@@ -144,14 +166,18 @@ def main():
 
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    
-    # Set padding token if not already set
+      # Set padding token if not already set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
     
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    
+    # Enable gradient checkpointing for memory efficiency
+    model.gradient_checkpointing_enable()
+    print("Gradient checkpointing enabled")
+    
     print("Model loaded successfully")
         
     print("Setting up LoRA...")
@@ -194,7 +220,16 @@ def main():
         weight_decay=0.01,
         fp16=True,
         deepspeed=args.deepspeed_config,
-        label_names=["labels"]
+        label_names=["labels"],
+        # Additional memory optimizations
+        gradient_checkpointing=True,
+        dataloader_pin_memory=False,
+        remove_unused_columns=False,
+        optim="adamw_torch_fused",  # More memory efficient optimizer
+        max_grad_norm=1.0,
+        # Reduce eval frequency to save memory
+        eval_steps=500,
+        logging_first_step=True
     )
 
     print("Creating trainer with DeepSpeed...")

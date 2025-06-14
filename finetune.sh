@@ -6,9 +6,9 @@
 #SBATCH --nodes=1                           # Run on a single node
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
-#SBATCH --gres=gpu:2                        # Number of GPUs per node (max allowed)
+#SBATCH --gres=gpu:4                        # Number of GPUs per node
 #SBATCH --constraint=H200                   # Specify GPU type
-#SBATCH --mem=200G                          # Total memory per node
+#SBATCH --mem=400G                          # Total memory per node
 #SBATCH --time=24:00:00                     # Time limit hrs:min:sec (1 day max for short)
 
 # Enable strict error handling
@@ -63,6 +63,9 @@ echo "Checking if files exist..."
 ls -la finetune.py || { echo "finetune.py not found"; exit 1; }
 ls -la $DEEPSPEED_CONFIG || { echo "DeepSpeed config not found"; exit 1; }
 
+echo "Checking DeepSpeed configuration..."
+cat $DEEPSPEED_CONFIG | grep -q '"stage": 3' && echo "✓ ZeRO-3 configuration detected" || echo "⚠ Warning: ZeRO-3 not detected in config"
+
 echo "Expanding CSV path..."
 EXPANDED_CSV_PATH=$(eval echo $CSV_PATH)
 echo "CSV path: $EXPANDED_CSV_PATH"
@@ -70,8 +73,15 @@ ls -la $EXPANDED_CSV_PATH || { echo "CSV file not found at $EXPANDED_CSV_PATH"; 
 
 # Set CUDA environment variables for memory optimization
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
+export NCCL_P2P_DISABLE=1  # Disable P2P for memory efficiency
+export NCCL_IB_DISABLE=1   # Disable InfiniBand if causing issues
 
-echo "Starting DeepSpeed..."
+echo "Memory optimization environment variables set:"
+echo "PYTORCH_CUDA_ALLOC_CONF: $PYTORCH_CUDA_ALLOC_CONF"
+echo "NCCL_P2P_DISABLE: $NCCL_P2P_DISABLE"
+echo "NCCL_IB_DISABLE: $NCCL_IB_DISABLE"
+
+echo "Starting DeepSpeed with optimized memory settings..."
 deepspeed \
   finetune.py \
   --model_name $MODEL_NAME \
@@ -79,11 +89,19 @@ deepspeed \
   --output_dir $OUTPUT_DIR \
   --per_device_train_batch_size 1 \
   --per_device_eval_batch_size 1 \
-  --gradient_accumulation_steps 2 \
+  --gradient_accumulation_steps 8 \
   --learning_rate 1e-4 \
-  --num_train_epochs 20 \
+  --num_train_epochs 3 \
   --lora_r 8 \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
-  --max_length 1024 \
+  --max_length 4096 \
   --deepspeed_config $DEEPSPEED_CONFIG
+
+echo "Fine-tuning job completed at $(date)"
+echo "Check the following files for results:"
+echo "  - Training logs: $OUTPUT_DIR"
+echo "  - Inference results: $OUTPUT_DIR/inference_results.json"
+echo "  - Model checkpoints: $OUTPUT_DIR/final"
+
+echo "Job finished successfully!"
