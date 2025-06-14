@@ -30,6 +30,9 @@ module load python/3.11.10 || { echo "Failed to load Python module"; exit 1; }
 echo "Loading CUDA module..."
 module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; }
 
+echo "Loading libaio module..."
+module load libaio/0.3.113/xtilfep
+
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 

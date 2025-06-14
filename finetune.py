@@ -321,5 +321,9 @@ def main():
     
     print(f"\nInference complete! Results saved to {os.path.join(args.output_dir, 'inference_results.json')}")
 
+    # At the end of training script
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
 if __name__ == '__main__':
     main()
