@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1                 # Run a single task
 #SBATCH --cpus-per-task=10                  # Number of CPU cores per task
 #SBATCH --gres=gpu:2                        # Number of GPUs per node (max allowed)
-#SBATCH --constraint=A100                   # Specify GPU type (A100)
+#SBATCH --constraint=H200                   # Specify GPU type
 #SBATCH --mem=200G                          # Total memory per node
 #SBATCH --time=24:00:00                     # Time limit hrs:min:sec (1 day max for short)
 
