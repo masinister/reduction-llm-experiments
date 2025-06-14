@@ -9,9 +9,8 @@
     "offload_optimizer": {
       "device": "cpu",
       "pin_memory": true
-    },
-    "offload_param": {
-      "device": "gpu",
+    },    "offload_param": {
+      "device": "none",
       "pin_memory": true
     },
     "overlap_comm": true,
