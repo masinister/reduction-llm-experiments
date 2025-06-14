@@ -79,10 +79,15 @@ export CUDA_LAUNCH_BLOCKING=0  # Enable async CUDA operations
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error handling
 export OMP_NUM_THREADS=8  # Limit OpenMP threads to reduce CPU memory
 
+# Set CUDA architecture list for H200 GPUs to avoid compilation warnings
+# H200 GPUs have compute capability 9.0
+export TORCH_CUDA_ARCH_LIST="9.0"
+
 echo "Memory optimization environment variables set:"
 echo "PYTORCH_CUDA_ALLOC_CONF: $PYTORCH_CUDA_ALLOC_CONF"
 echo "NCCL_P2P_DISABLE: $NCCL_P2P_DISABLE"
 echo "NCCL_IB_DISABLE: $NCCL_IB_DISABLE"
+echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
 
 echo "Starting DeepSpeed with optimized memory settings..."
 echo "Command to be executed:"
