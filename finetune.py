@@ -2,18 +2,11 @@ import os
 import argparse
 import torch
 import json
-import gc  # For garbage collection
+
 from datasets import load_dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForSeq2Seq
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForLanguageModeling, TrainerCallback
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
-
-def clear_memory():
-    """Clear GPU and system memory"""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-    gc.collect()
 
 def print_memory_usage():
     """Print current memory usage"""
@@ -23,6 +16,12 @@ def print_memory_usage():
         print(f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
     else:
         print("CUDA not available")
+
+class MemoryLoggerCallback(TrainerCallback):
+    def on_epoch_end(self, args, state, control, **kwargs):
+        torch.cuda.empty_cache()
+        allocated = torch.cuda.max_memory_allocated() / 1024**3
+        print(f"Peak GPU mem this epoch: {allocated:.2f} GB")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune LLaMA on reduction dataset with LoRA and multi-GPU support")
@@ -47,14 +46,13 @@ def parse_args():
     parser.add_argument("--max_length", type=int, default=512,
                         help="Reduced max length for memory efficiency")
     parser.add_argument("--deepspeed_config", type=str, default=None,
-                        help="Path to a DeepSpeed config JSON for ZeRO or FP16")
+                        help="Path to DeepSpeed config JSON. Options: deepspeed-config.json (balanced), deepspeed-config-nvme.json (max memory), deepspeed-config-profile.json (debugging)")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="Local rank for distributed training (automatically set by DeepSpeed)")
     parser.add_argument("--model_dtype", type=str, default="bfloat16", 
-                        choices=["float16", "bfloat16", "float32"],
-                        help="Model data type for memory efficiency (default: bfloat16)")
+                        choices=["float16", "bfloat16", "float32"],                        help="Model data type for memory efficiency (default: bfloat16)")
     parser.add_argument("--cpu_offload", action="store_true",
-                        help="Enable CPU offloading for even more memory savings")
+                        help="Legacy option - DeepSpeed now handles CPU offloading automatically")
     return parser.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -67,7 +65,9 @@ def load_and_prepare(args, tokenizer):
     # 80/10/10 split
     split1 = raw.train_test_split(test_size=0.2, seed=42)
     split2 = split1['train'].train_test_split(test_size=0.1, seed=42)
-    dataset = DatasetDict({
+    
+    # Create both raw and tokenized datasets from the same splits
+    raw_dataset = DatasetDict({
         'train': split2['train'],
         'validation': split2['test'],
         'test': split1['test']
@@ -83,8 +83,8 @@ def load_and_prepare(args, tokenizer):
         tok['labels'] = tok['input_ids'].copy()
         return tok
 
-    tokenized = dataset.map(tokenize_fn, batched=False, remove_columns=dataset['train'].column_names)
-    return tokenized
+    tokenized_dataset = raw_dataset.map(tokenize_fn, batched=False, remove_columns=raw_dataset['train'].column_names)
+    return tokenized_dataset, raw_dataset
 
 def run_inference(model, tokenizer, test_dataset, original_test_data, args):
     """Run inference on the test set and save results to JSON"""
@@ -172,9 +172,7 @@ def main():
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
     print_memory_usage()
-    
-    # Clear memory before starting
-    clear_memory()
+
     
     print(f"Starting fine-tuning with the following arguments:")
     for arg, value in vars(args).items():
@@ -196,7 +194,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
     
-    print("Loading model with memory optimizations...")
+    print("Loading model with DeepSpeed-optimized memory management...")
     
     # Determine the model dtype
     dtype_map = {
@@ -207,23 +205,15 @@ def main():
     model_dtype = dtype_map[args.model_dtype]
     print(f"Using model dtype: {args.model_dtype}")
     
-    # Load model with memory optimizations
+    # Load model with memory optimizations and DeepSpeed synergy
     model_kwargs = {
+        "device_map": "auto",
+        "offload_folder": "offload",
+        "offload_state_dict": True,
         "torch_dtype": model_dtype,
         "low_cpu_mem_usage": True,
         "trust_remote_code": True,
     }
-    
-    # Add device mapping if not using CPU offload
-    if not args.cpu_offload:
-        model_kwargs["device_map"] = "auto"
-    
-    # Try to use flash attention if available
-    try:
-        model_kwargs["attn_implementation"] = "flash_attention_2"
-        print("Using Flash Attention 2")
-    except:
-        print("Flash Attention 2 not available, using default attention")
     
     model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
     
@@ -235,7 +225,7 @@ def main():
         print("Warning: Model does not support gradient checkpointing")
     
     print("Model loaded successfully")
-        
+    
     print("Setting up LoRA...")
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -243,28 +233,23 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
     )
 
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print("LoRA setup complete")
     
-    # Clear memory after model setup
-    clear_memory()
     print_memory_usage()
-
+    
     print("Loading and preparing dataset...")
-    tokenized_ds = load_and_prepare(args, tokenizer)
+    tokenized_ds, raw_ds = load_and_prepare(args, tokenizer)
     print(f"Dataset loaded. Train: {len(tokenized_ds['train'])}, Validation: {len(tokenized_ds['validation'])}, Test: {len(tokenized_ds['test'])}")
 
-    # Keep original test data for inference
-    csv_path = os.path.expanduser(args.csv_path)
-    raw = load_dataset("csv", data_files=csv_path, split="train")
-    split1 = raw.train_test_split(test_size=0.2, seed=42)
-    original_test_data = split1['test']
+    # Use the same test split for inference
+    original_test_data = raw_ds['test']
 
-    data_collator = DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8, return_tensors='pt')
+    data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -278,7 +263,6 @@ def main():
         eval_strategy='epoch',
         save_total_limit=2,  # Reduced from 3 to save disk space
         weight_decay=0.01,
-        bf16=True,  # Use bfloat16 instead of fp16 for better stability
         deepspeed=args.deepspeed_config,
         label_names=["labels"],
         # Additional memory optimizations
@@ -291,7 +275,6 @@ def main():
         eval_steps=500,
         logging_first_step=True,
         # Additional memory savings
-        save_safetensors=True,
         load_best_model_at_end=False,  # Don't load best model to save memory
         metric_for_best_model=None,
         greater_is_better=None,
@@ -299,7 +282,7 @@ def main():
         prediction_loss_only=True,
         include_inputs_for_metrics=False
     )
-
+    
     print("Creating trainer with DeepSpeed...")
     trainer = Trainer(
         model=model,
@@ -307,18 +290,22 @@ def main():
         train_dataset=tokenized_ds['train'],
         eval_dataset=tokenized_ds['validation'],
         data_collator=data_collator,
-        processing_class=tokenizer
+        processing_class=tokenizer,
+        callbacks=[MemoryLoggerCallback()]
     )
 
     print("Starting training...")
     trainer.train()
     
-    # Clear memory after training
-    clear_memory()
     print_memory_usage()
     
+    # Save model with safetensors format
     trainer.save_model(os.path.join(args.output_dir, 'final'))
-    tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))# Run inference on test set
+    # Also save the model directly with safetensors for compatibility
+    model.save_pretrained(os.path.join(args.output_dir, 'final'), safe_serialization=True)
+    tokenizer.save_pretrained(os.path.join(args.output_dir, 'final'))
+    
+    # Run inference on test set
     print("\n" + "="*50)
     print("TRAINING COMPLETE - STARTING INFERENCE")
     print("="*50)

@@ -1,6 +1,6 @@
 {
   "train_batch_size": 64,
-  "gradient_accumulation_steps": "auto",
+  "gradient_accumulation_steps": "auto", 
   "bf16": {
     "enabled": true
   },
@@ -30,6 +30,6 @@
     "contiguous_memory_optimization": true,
     "number_checkpoints": 4,
     "synchronize_checkpoint_boundary": true,
-    "profile": false
+    "profile": true
   }
 }
