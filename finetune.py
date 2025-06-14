@@ -214,6 +214,9 @@ def main():
     
     model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
     
+    # disable cache so it doesn’t spit warnings when checkpointing
+    model.config.use_cache = False
+
     # Enable gradient checkpointing for memory efficiency
     if hasattr(model, 'gradient_checkpointing_enable'):
         model.gradient_checkpointing_enable()
