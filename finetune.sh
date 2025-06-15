@@ -57,14 +57,9 @@ ls -la
 MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
 CSV_PATH="~/data/karp.csv"
 OUTPUT_DIR="./llama_finetune/"
-DEEPSPEED_CONFIG="deepspeed-config.json"
 
 echo "Checking if files exist..."
 ls -la finetune.py || { echo "finetune.py not found"; exit 1; }
-ls -la $DEEPSPEED_CONFIG || { echo "DeepSpeed config not found"; exit 1; }
-
-echo "Checking DeepSpeed configuration..."
-cat $DEEPSPEED_CONFIG | grep -q '"stage": 3' && echo "✓ ZeRO-3 configuration detected" || echo "⚠ Warning: ZeRO-3 not detected in config"
 
 echo "Expanding CSV path..."
 EXPANDED_CSV_PATH=$(eval echo $CSV_PATH)
@@ -83,17 +78,24 @@ export OMP_NUM_THREADS=8  # Limit OpenMP threads to reduce CPU memory
 # H200 GPUs have compute capability 9.0
 export TORCH_CUDA_ARCH_LIST="9.0"
 
+# FSDP environment variables
+export NCCL_BLOCKING_WAIT=1  # Better synchronization for FSDP
+export NCCL_DEBUG=INFO  # Enable NCCL debugging
+export TORCH_DISTRIBUTED_DEBUG=INFO  # Enable distributed debugging
+
 echo "Memory optimization environment variables set:"
 echo "PYTORCH_CUDA_ALLOC_CONF: $PYTORCH_CUDA_ALLOC_CONF"
 echo "NCCL_P2P_DISABLE: $NCCL_P2P_DISABLE"
 echo "NCCL_IB_DISABLE: $NCCL_IB_DISABLE"
 echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
 
-echo "Starting DeepSpeed with optimized memory settings..."
+echo "Starting FSDP training with optimized memory settings..."
 echo "Command to be executed:"
-echo "deepspeed finetune.py --model_name $MODEL_NAME --csv_path $CSV_PATH --output_dir $OUTPUT_DIR --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 16 --learning_rate 1e-4 --num_train_epochs 3 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 --max_length 2048 --model_dtype bfloat16 --cpu_offload --deepspeed_config $DEEPSPEED_CONFIG"
+echo "torchrun --nproc_per_node=4 --nnodes=1 finetune.py --model_name $MODEL_NAME --csv_path $CSV_PATH --output_dir $OUTPUT_DIR --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 16 --learning_rate 1e-4 --num_train_epochs 3 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 --max_length 2048 --model_dtype bfloat16 --cpu_offload --fsdp 'full_shard auto_wrap' --fsdp_transformer_layer_cls_to_wrap LlamaDecoderLayer"
 echo ""
-deepspeed \
+torchrun \
+  --nproc_per_node=4 \
+  --nnodes=1 \
   finetune.py \
   --model_name $MODEL_NAME \
   --csv_path $CSV_PATH \
@@ -109,7 +111,8 @@ deepspeed \
   --max_length 2048 \
   --model_dtype bfloat16 \
   --cpu_offload \
-  --deepspeed_config $DEEPSPEED_CONFIG
+  --fsdp "full_shard auto_wrap" \
+  --fsdp_transformer_layer_cls_to_wrap "LlamaDecoderLayer"
 
 echo "Fine-tuning job completed at $(date)"
 echo "Check the following files for results:"

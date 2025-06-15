@@ -2,11 +2,15 @@ import os
 import argparse
 import torch
 import json
+from functools import partial
 
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForLanguageModeling, TrainerCallback
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 def print_memory_usage():
     """Print current memory usage"""
@@ -24,7 +28,7 @@ class MemoryLoggerCallback(TrainerCallback):
         print(f"Peak GPU mem this epoch: {allocated:.2f} GB")
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune LLaMA on reduction dataset with LoRA and multi-GPU support")
+    parser = argparse.ArgumentParser(description="Fine-tune LLaMA on reduction dataset with LoRA and FSDP support")
     parser.add_argument("--model_name", type=str, required=True,
                         help="Base model identifier or HF repo ID, e.g., llama-base or meta-llama/Llama-2-7b-hf")
     parser.add_argument("--csv_path", type=str, required=True,
@@ -45,14 +49,17 @@ def parse_args():
     parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
     parser.add_argument("--max_length", type=int, default=512,
                         help="Reduced max length for memory efficiency")
-    parser.add_argument("--deepspeed_config", type=str, default=None,
-                        help="Path to DeepSpeed config JSON. Options: deepspeed-config.json (balanced), deepspeed-config-nvme.json (max memory), deepspeed-config-profile.json (debugging)")
+    parser.add_argument("--fsdp", type=str, default="full_shard auto_wrap",
+                        help="FSDP configuration. Options: 'full_shard auto_wrap' (default), 'shard_grad_op auto_wrap', 'hybrid_shard auto_wrap'")
+    parser.add_argument("--fsdp_transformer_layer_cls_to_wrap", type=str, default="LlamaDecoderLayer",
+                        help="Transformer layer class to wrap for FSDP auto-wrapping")
     parser.add_argument("--local_rank", type=int, default=-1,
-                        help="Local rank for distributed training (automatically set by DeepSpeed)")
+                        help="Local rank for distributed training")
     parser.add_argument("--model_dtype", type=str, default="bfloat16", 
-                        choices=["float16", "bfloat16", "float32"],                        help="Model data type for memory efficiency (default: bfloat16)")
+                        choices=["float16", "bfloat16", "float32"],
+                        help="Model data type for memory efficiency (default: bfloat16)")
     parser.add_argument("--cpu_offload", action="store_true",
-                        help="Legacy option - DeepSpeed now handles CPU offloading automatically")
+                        help="Enable CPU offloading for FSDP to reduce GPU memory usage")
     return parser.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -149,25 +156,17 @@ def run_inference(model, tokenizer, test_dataset, original_test_data, args):
     
     return results
 
-def setup_deepspeed_config(args):
-    """Setup DeepSpeed configuration with ZeRO-3 if no config provided"""
-    if args.deepspeed_config is None:
-        # Use the default ZeRO-3 config
-        default_config = "deepspeed-config.json"
-        if os.path.exists(default_config):
-            args.deepspeed_config = default_config
-            print(f"Using default DeepSpeed config: {default_config}")
-        else:
-            print("Warning: No DeepSpeed config found. Training without DeepSpeed.")
-    else:
-        print(f"Using provided DeepSpeed config: {args.deepspeed_config}")
-    
+def setup_fsdp_config(args):
+    """Setup FSDP configuration"""
+    print(f"Using FSDP configuration: {args.fsdp}")
+    print(f"FSDP transformer layer class to wrap: {args.fsdp_transformer_layer_cls_to_wrap}")
     return args
 
 def main():
     args = parse_args()
-      # Setup DeepSpeed configuration
-    args = setup_deepspeed_config(args)
+    
+    # Setup FSDP configuration
+    args = setup_fsdp_config(args)
     
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"GPU count: {torch.cuda.device_count()}")
@@ -189,12 +188,13 @@ def main():
         print(f"Downloaded to '{cache_dir}'")
 
     print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)    # Set padding token if not already set
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    # Set padding token if not already set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print(f"Set pad_token to eos_token: {tokenizer.pad_token}")
     
-    print("Loading model with DeepSpeed-optimized memory management...")
+    print("Loading model with FSDP-optimized memory management...")
     
     # Determine the model dtype
     dtype_map = {
@@ -205,7 +205,7 @@ def main():
     model_dtype = dtype_map[args.model_dtype]
     print(f"Using model dtype: {args.model_dtype}")
     
-    # Load model with memory optimizations and DeepSpeed synergy
+    # Load model with memory optimizations for FSDP
     model_kwargs = {
         "torch_dtype": model_dtype,
         "low_cpu_mem_usage": True,
@@ -263,7 +263,14 @@ def main():
         eval_strategy='epoch',
         save_total_limit=2,  # Reduced from 3 to save disk space
         weight_decay=0.01,
-        deepspeed=args.deepspeed_config,
+        fsdp=args.fsdp,
+        fsdp_transformer_layer_cls_to_wrap=args.fsdp_transformer_layer_cls_to_wrap,
+        fsdp_config={
+            "cpu_offload": args.cpu_offload,
+            "backward_prefetch": "backward_pre",
+            "forward_prefetch": False,
+            "use_orig_params": True,
+        },
         label_names=["labels"],
         # Additional memory optimizations
         gradient_checkpointing=True,
@@ -283,7 +290,7 @@ def main():
         include_inputs_for_metrics=False
     )
     
-    print("Creating trainer with DeepSpeed...")
+    print("Creating trainer with FSDP...")
     trainer = Trainer(
         model=model,
         args=training_args,
