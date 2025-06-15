@@ -266,11 +266,7 @@ def main():
         remove_unused_columns=False,
         optim="adamw_torch_fused",  # More memory efficient optimizer
         max_grad_norm=1.0,
-        # Reduce eval frequency to save memory
-        eval_steps=500,
-        logging_first_step=True,
         # Additional memory savings
-        load_best_model_at_end=False,
         metric_for_best_model=None,
         greater_is_better=None,
         # Reduce memory usage during evaluation
