@@ -2,13 +2,12 @@ import os
 import argparse
 import torch
 import json
-from functools import partial
 
 from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, DataCollatorForLanguageModeling, TrainerCallback
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 def print_memory_usage():
@@ -154,12 +153,75 @@ def run_inference(model, tokenizer, test_dataset, original_test_data, args):
     return results
 
 def setup_fsdp_config(args):
-    """Setup FSDP configuration"""
-    print(f"Using FSDP configuration: {args.fsdp}")
+    strat, opts = parse_fsdp_strategy(args.fsdp)
+    args.fsdp_strategy = strat
+    args.fsdp_auto_wrap = opts["auto_wrap"]
+
+    cfg = {
+        "cpu_offload": args.cpu_offload,
+        "backward_prefetch": "backward_pre",
+        "forward_prefetch": False,
+        "use_orig_params": True,
+        "auto_wrap_policy": transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
+        "activation_checkpointing": True,
+    }
+
+    if args.fsdp_auto_wrap:
+        cfg["transformer_layer_cls_to_wrap"] = [
+            "transformers.models.llama.modeling_llama.LlamaDecoderLayer"
+        ]
+        
+    args.fsdp_config = {k: v for k, v in cfg.items() if v is not None}
     return args
+
+
+def setup_distributed_training(args):
+    """Setup distributed training and device"""
+    # Initialize distributed training if using torchrun
+    if 'LOCAL_RANK' in os.environ:
+        args.local_rank = int(os.environ['LOCAL_RANK'])
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl')
+        print(f"Initialized distributed training on local rank {args.local_rank}")
+    elif args.local_rank != -1:
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl')
+        print(f"Initialized distributed training on local rank {args.local_rank}")
+    else:
+        print("Running in single-GPU mode")
+    
+    return args
+
+def parse_fsdp_strategy(fsdp_string):
+    """Parse FSDP strategy string into proper format for transformers"""
+    if not fsdp_string:
+        return None, {}
+    
+    # Split the string to get strategy and wrap policy
+    parts = fsdp_string.split()
+    strategy = parts[0] if parts else "full_shard"
+    
+    # Map common strategy names
+    strategy_map = {
+        "full_shard": "full_shard",
+        "shard_grad_op": "shard_grad_op", 
+        "hybrid_shard": "hybrid_shard",
+        "no_shard": "no_shard"
+    }
+    
+    fsdp_strategy = strategy_map.get(strategy, "full_shard")
+    
+    # Check for auto_wrap
+    auto_wrap = "auto_wrap" in fsdp_string
+    
+    print(f"Parsed FSDP strategy: {fsdp_strategy}, auto_wrap: {auto_wrap}")
+    return fsdp_strategy, {"auto_wrap": auto_wrap}
 
 def main():
     args = parse_args()
+    
+    # Setup distributed training
+    args = setup_distributed_training(args)
     
     # Setup FSDP configuration
     args = setup_fsdp_config(args)
@@ -240,6 +302,8 @@ def main():
 
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
+    print("Final fsdp_config:", args.fsdp_config)
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -248,18 +312,12 @@ def main():
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_train_epochs,
         logging_steps=50,
-        save_strategy='epoch',        eval_strategy='epoch',
-        save_total_limit=2,  # Reduced from 3 to save disk space
+        save_strategy='epoch',
+        eval_strategy='epoch',
+        save_total_limit=3,
         weight_decay=0.01,
-        fsdp=args.fsdp,
-        fsdp_config={
-            "cpu_offload": args.cpu_offload,
-            "backward_prefetch": "backward_pre",
-            "forward_prefetch": False,
-            "use_orig_params": True,
-            "auto_wrap_policy": transformer_auto_wrap_policy,
-            "activation_checkpointing": True,
-        },
+        fsdp=args.fsdp_strategy,
+        fsdp_config=args.fsdp_config,
         label_names=["labels"],
         # Additional memory optimizations
         dataloader_pin_memory=False,
