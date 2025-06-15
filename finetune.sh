@@ -80,8 +80,9 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 
 # FSDP environment variables
 export TORCH_NCCL_BLOCKING_WAIT=1  # Better synchronization for FSDP (updated from deprecated NCCL_BLOCKING_WAIT)
-export NCCL_DEBUG=INFO  # Enable NCCL debugging
-export TORCH_DISTRIBUTED_DEBUG=INFO  # Enable distributed debugging
+export NCCL_DEBUG=WARN  # Reduce NCCL verbosity (changed from INFO to WARN)
+export TORCH_DISTRIBUTED_DEBUG=WARN  # Reduce distributed debugging verbosity (changed from INFO to WARN)
+export TORCH_CPP_LOG_LEVEL=ERROR  # Suppress C++ warnings from PyTorch
 
 echo "Memory optimization environment variables set:"
 echo "PYTORCH_CUDA_ALLOC_CONF: $PYTORCH_CUDA_ALLOC_CONF"

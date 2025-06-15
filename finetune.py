@@ -10,7 +10,6 @@ from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 def print_memory_usage():
     """Print current memory usage"""
@@ -259,8 +258,7 @@ def main():
             "forward_prefetch": False,
             "use_orig_params": True,
             "auto_wrap_policy": transformer_auto_wrap_policy,
-            "transformer_layer_cls_to_wrap": {LlamaDecoderLayer},
-            "activation_checkpointing": True,  # Use activation_checkpointing instead of gradient_checkpointing for FSDP
+            "activation_checkpointing": True,
         },
         label_names=["labels"],
         # Additional memory optimizations
