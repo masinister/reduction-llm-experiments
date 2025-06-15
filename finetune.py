@@ -9,6 +9,7 @@ from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.distributed.fsdp import FullStateDictConfig
 
 def print_memory_usage():
     """Print current memory usage"""
@@ -164,6 +165,7 @@ def setup_fsdp_config(args):
         "use_orig_params": True,
         "auto_wrap_policy": transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
         "activation_checkpointing": True,
+        "state_dict_type": FullStateDictConfig(offload_to_cpu=True),
     }
 
     if args.fsdp_auto_wrap:
