@@ -79,7 +79,7 @@ export OMP_NUM_THREADS=8  # Limit OpenMP threads to reduce CPU memory
 export TORCH_CUDA_ARCH_LIST="9.0"
 
 # FSDP environment variables
-export NCCL_BLOCKING_WAIT=1  # Better synchronization for FSDP
+export TORCH_NCCL_BLOCKING_WAIT=1  # Better synchronization for FSDP (updated from deprecated NCCL_BLOCKING_WAIT)
 export NCCL_DEBUG=INFO  # Enable NCCL debugging
 export TORCH_DISTRIBUTED_DEBUG=INFO  # Enable distributed debugging
 
@@ -91,7 +91,7 @@ echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
 
 echo "Starting FSDP training with optimized memory settings..."
 echo "Command to be executed:"
-echo "torchrun --nproc_per_node=4 --nnodes=1 finetune.py --model_name $MODEL_NAME --csv_path $CSV_PATH --output_dir $OUTPUT_DIR --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 16 --learning_rate 1e-4 --num_train_epochs 3 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 --max_length 2048 --model_dtype bfloat16 --cpu_offload --fsdp 'full_shard auto_wrap' --fsdp_transformer_layer_cls_to_wrap LlamaDecoderLayer"
+echo "torchrun --nproc_per_node=4 --nnodes=1 finetune.py --model_name $MODEL_NAME --csv_path $CSV_PATH --output_dir $OUTPUT_DIR --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 16 --learning_rate 1e-4 --num_train_epochs 3 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 --max_length 2048 --model_dtype bfloat16 --cpu_offload --fsdp 'full_shard auto_wrap'"
 echo ""
 torchrun \
   --nproc_per_node=4 \
@@ -111,8 +111,7 @@ torchrun \
   --max_length 2048 \
   --model_dtype bfloat16 \
   --cpu_offload \
-  --fsdp "full_shard auto_wrap" \
-  --fsdp_transformer_layer_cls_to_wrap "LlamaDecoderLayer"
+  --fsdp "full_shard auto_wrap"
 
 echo "Fine-tuning job completed at $(date)"
 echo "Check the following files for results:"

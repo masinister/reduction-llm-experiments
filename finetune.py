@@ -51,8 +51,6 @@ def parse_args():
                         help="Reduced max length for memory efficiency")
     parser.add_argument("--fsdp", type=str, default="full_shard auto_wrap",
                         help="FSDP configuration. Options: 'full_shard auto_wrap' (default), 'shard_grad_op auto_wrap', 'hybrid_shard auto_wrap'")
-    parser.add_argument("--fsdp_transformer_layer_cls_to_wrap", type=str, default="LlamaDecoderLayer",
-                        help="Transformer layer class to wrap for FSDP auto-wrapping")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="Local rank for distributed training")
     parser.add_argument("--model_dtype", type=str, default="bfloat16", 
@@ -159,7 +157,6 @@ def run_inference(model, tokenizer, test_dataset, original_test_data, args):
 def setup_fsdp_config(args):
     """Setup FSDP configuration"""
     print(f"Using FSDP configuration: {args.fsdp}")
-    print(f"FSDP transformer layer class to wrap: {args.fsdp_transformer_layer_cls_to_wrap}")
     return args
 
 def main():
@@ -215,14 +212,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
     
     # disable cache so it doesn’t spit warnings when checkpointing
-    model.config.use_cache = False
-
-    # Enable gradient checkpointing for memory efficiency
-    if hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-        print("Gradient checkpointing enabled")
-    else:
-        print("Warning: Model does not support gradient checkpointing")
+    model.config.use_cache = False    # Gradient checkpointing will be handled by FSDP activation_checkpointing
     
     print("Model loaded successfully")
     
@@ -259,21 +249,21 @@ def main():
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_train_epochs,
         logging_steps=50,
-        save_strategy='epoch',
-        eval_strategy='epoch',
+        save_strategy='epoch',        eval_strategy='epoch',
         save_total_limit=2,  # Reduced from 3 to save disk space
         weight_decay=0.01,
         fsdp=args.fsdp,
-        fsdp_transformer_layer_cls_to_wrap=args.fsdp_transformer_layer_cls_to_wrap,
         fsdp_config={
             "cpu_offload": args.cpu_offload,
             "backward_prefetch": "backward_pre",
             "forward_prefetch": False,
             "use_orig_params": True,
+            "auto_wrap_policy": transformer_auto_wrap_policy,
+            "transformer_layer_cls_to_wrap": {LlamaDecoderLayer},
+            "activation_checkpointing": True,  # Use activation_checkpointing instead of gradient_checkpointing for FSDP
         },
         label_names=["labels"],
         # Additional memory optimizations
-        gradient_checkpointing=True,
         dataloader_pin_memory=False,
         remove_unused_columns=False,
         optim="adamw_torch_fused",  # More memory efficient optimizer
