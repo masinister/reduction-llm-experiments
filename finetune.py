@@ -202,13 +202,13 @@ def main():
     os.makedirs(final_dir, exist_ok=True)
 
     if torch.cuda.device_count() > 1:
-        print("Saving via FSDP get_state_dict…")
-        # Create options for a *full* state dict, offloading weights to CPU if requested
-        options = StateDictOptions(full_state_dict=True, offload_to_cpu=args.cpu_offload)
-        # Returns (model_state_dict, optimizer_state_dict)
-        model_sd, optim_sd = get_state_dict(trainer.model, trainer.optimizer, options=options)
-        torch.save(model_sd, os.path.join(final_dir, "pytorch_model.bin"))
-        torch.save(optim_sd, os.path.join(final_dir, "optimizer_state.bin"))
+        print("Saving via FSDP get_state_dict...")
+        state_dict = get_state_dict(
+            trainer.model,
+            options=StateDictOptions(fully_sharded=True, cpu_offload=True)
+        )
+        os.makedirs(final_dir, exist_ok=True)
+        torch.save(state_dict, os.path.join(final_dir, "pytorch_model.bin"))
         trainer.model.config.save_pretrained(final_dir)
     else:
         trainer.save_model(final_dir)
