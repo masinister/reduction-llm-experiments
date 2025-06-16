@@ -182,7 +182,7 @@ def main():
         num_train_epochs=args.num_train_epochs,
         logging_steps=50,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_total_limit=3,
         weight_decay=0.01,
         label_names=["labels"],
