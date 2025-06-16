@@ -93,7 +93,6 @@ def load_model_and_tokenizer(args):
     model.eval()
 
     # Final PEFT check
-    from peft import PeftModel
     if isinstance(model, PeftModel) and args.merge_adapters:
         raise RuntimeError("PEFT wrapper still present — merge_and_unload() likely failed.")
 
