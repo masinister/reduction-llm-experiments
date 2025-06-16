@@ -16,13 +16,9 @@ from transformers import (
 )
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
-from torch.distributed.fsdp import (
-    StateDictType,
-    FullStateDictConfig,
-)
-from torch.distributed.checkpoint.state_dict import get_state_dict
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 import torch.distributed.fsdp as fsdp
+from torch.distributed.checkpoint.state_dict import get_state_dict, StateDictOptions
 
 
 def print_memory_usage():
@@ -87,7 +83,6 @@ def load_and_prepare(args, tokenizer):
     val_idx, test_idx = held[:5], held[5:]
     train_idx = idx[10:]
 
-    # Save held‑out
     os.makedirs(args.output_dir, exist_ok=True)
     held_info = {
         "dataset_size": total,
@@ -127,11 +122,9 @@ def main():
     print_memory_usage()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    # Download if needed
     if not os.path.isdir(args.model_name):
         args.model_name = snapshot_download(repo_id=args.model_name)
 
-    # Tokenizer + model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 
@@ -148,7 +141,6 @@ def main():
     )
     model.config.use_cache = False
 
-    # LoRA
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -162,7 +154,6 @@ def main():
     tokenized_ds, _ = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-    # Build fsdp_config only if more than 1 GPU
     fsdp_cfg = None
     if torch.cuda.device_count() > 1:
         fsdp_cfg = {
@@ -205,24 +196,24 @@ def main():
     )
 
     trainer.train()
-    print_memory_usage()    # Save final
+    print_memory_usage()
+
     final_dir = os.path.join(args.output_dir, "final")
-    is_fsdp = torch.cuda.device_count() > 1
-    if is_fsdp:
-        print("Saving via FSDP get_state_dict...")
-        state_dict_config = FullStateDictConfig(offload_to_cpu=True)
-        state_dict = get_state_dict(
-            trainer.model,
-            state_dict_type=StateDictType.FULL_STATE_DICT,
-            state_dict_config=state_dict_config,
-        )
-        os.makedirs(final_dir, exist_ok=True)
-        torch.save(state_dict, os.path.join(final_dir, "pytorch_model.bin"))
+    os.makedirs(final_dir, exist_ok=True)
+
+    if torch.cuda.device_count() > 1:
+        print("Saving via FSDP get_state_dict…")
+        # Create options for a *full* state dict, offloading weights to CPU if requested
+        options = StateDictOptions(full_state_dict=True, offload_to_cpu=args.cpu_offload)
+        # Returns (model_state_dict, optimizer_state_dict)
+        model_sd, optim_sd = get_state_dict(trainer.model, trainer.optimizer, options=options)
+        torch.save(model_sd, os.path.join(final_dir, "pytorch_model.bin"))
+        torch.save(optim_sd, os.path.join(final_dir, "optimizer_state.bin"))
         trainer.model.config.save_pretrained(final_dir)
     else:
         trainer.save_model(final_dir)
-    tokenizer.save_pretrained(final_dir)
 
+    tokenizer.save_pretrained(final_dir)
     print("Done! Final model at:", final_dir)
 
 
