@@ -11,6 +11,9 @@
 #SBATCH --mem=400G
 #SBATCH --time=24:00:00
 
+# Usage: ./finetune.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH]
+# All parameters are optional and have defaults
+
 # Enable strict error handling
 set -euxo pipefail
 
@@ -35,6 +38,27 @@ module load libaio/0.3.113/xtilfep
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate
 
+# Parameters from CLI or defaults
+MODEL_NAME=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
+CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
+OUTPUT_DIR=${3:-"./llama_finetune"}
+BATCH_SIZE=${4:-1}
+GRAD_ACCUM=${5:-16}
+LEARNING_RATE=${6:-1e-4}
+EPOCHS=${7:-20}
+MAX_LENGTH=${8:-2048}
+
+echo ""
+echo "Model name: $MODEL_NAME"
+echo "CSV path: $CSV_PATH"
+echo "Output directory: $OUTPUT_DIR"
+echo "Batch size per device: $BATCH_SIZE"
+echo "Gradient accumulation steps: $GRAD_ACCUM"
+echo "Learning rate: $LEARNING_RATE"
+echo "Number of epochs: $EPOCHS"
+echo "Max sequence length: $MAX_LENGTH"
+echo ""
+
 # Check GPU status
 echo "GPU status:"
 nvidia-smi || { echo "nvidia-smi failed"; exit 1; }
@@ -46,17 +70,18 @@ echo "Working directory: $(pwd)"
 echo "Files:"
 ls -lh
 
-# Paths
-MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
-CSV_PATH="$HOME/data/karp.csv"
-OUTPUT_DIR="./llama_finetune"
+# Validate required files
+if [[ ! -f "$CSV_PATH" ]]; then
+  echo "ERROR: CSV file not found at $CSV_PATH"
+  exit 1
+fi
 
-# Expand tilde (~) and check CSV path
-EXPANDED_CSV_PATH=$(eval echo "$CSV_PATH")
-[[ -f "$EXPANDED_CSV_PATH" ]] || { echo "CSV file not found at $EXPANDED_CSV_PATH"; exit 1; }
+if [[ ! -f "finetune.py" ]]; then
+  echo "ERROR: finetune.py not found in working directory"
+  exit 1
+fi
 
-# Check training script
-[[ -f "finetune.py" ]] || { echo "finetune.py not found in working directory"; exit 1; }
+echo "All required files found."
 
 # Memory and compute environment optimizations
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
@@ -80,17 +105,17 @@ torchrun \
   --nnodes=1 \
   finetune.py \
   --model_name "$MODEL_NAME" \
-  --csv_path "$EXPANDED_CSV_PATH" \
+  --csv_path "$CSV_PATH" \
   --output_dir "$OUTPUT_DIR" \
-  --per_device_train_batch_size 1 \
-  --per_device_eval_batch_size 1 \
-  --gradient_accumulation_steps 16 \
-  --learning_rate 1e-4 \
-  --num_train_epochs 20 \
+  --per_device_train_batch_size "$BATCH_SIZE" \
+  --per_device_eval_batch_size "$BATCH_SIZE" \
+  --gradient_accumulation_steps "$GRAD_ACCUM" \
+  --learning_rate "$LEARNING_RATE" \
+  --num_train_epochs "$EPOCHS" \
   --lora_r 8 \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
-  --max_length 2048 \
+  --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
   --cpu_offload \
   --fsdp_sharding_strategy "full_shard" \
@@ -106,4 +131,4 @@ echo "  - Model directory: $OUTPUT_DIR"
 echo "  - Final model:     $OUTPUT_DIR/final"
 echo "=================================================="
 echo "To run inference:"
-echo "  ./inference.sh \"$MODEL_NAME\" \"$EXPANDED_CSV_PATH\" \"$OUTPUT_DIR\" ./inference_results test"
+echo "  ./inference.sh \"$MODEL_NAME\" \"$CSV_PATH\" \"$OUTPUT_DIR\" ./inference_results test"
