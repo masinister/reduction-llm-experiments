@@ -20,7 +20,7 @@ from torch.distributed.fsdp import (
     StateDictType,
     FullStateDictConfig,
 )
-from torch.distributed.checkpoint import get_state_dict
+from torch.distributed.checkpoint.state_dict import get_state_dict
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 import torch.distributed.fsdp as fsdp
 
