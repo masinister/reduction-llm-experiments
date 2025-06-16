@@ -39,7 +39,7 @@ echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate
 
 # Parameters from CLI or defaults
-MODEL_NAME=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
+MODEL_NAME=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 OUTPUT_DIR=${3:-"./llama_finetune"}
 BATCH_SIZE=${4:-1}

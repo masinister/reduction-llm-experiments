@@ -30,7 +30,7 @@ module load cuda/12.4.0/3mdaov5
 source ~/venvs/reductions/bin/activate
 
 # Parameters from CLI or defaults
-MODEL_NAME=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
+MODEL_NAME=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 OUTPUT_DIR=${3:-"./llama_finetune"}
 INFERENCE_OUTPUT=${4:-"./inference_results"}
