@@ -20,6 +20,7 @@ from torch.distributed.fsdp import (
     StateDictType,
     FullStateDictConfig,
 )
+from torch.distributed.checkpoint import get_state_dict
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 import torch.distributed.fsdp as fsdp
 
@@ -204,19 +205,20 @@ def main():
     )
 
     trainer.train()
-    print_memory_usage()
-
-    # Save final
+    print_memory_usage()    # Save final
     final_dir = os.path.join(args.output_dir, "final")
     is_fsdp = torch.cuda.device_count() > 1
     if is_fsdp:
-        print("Saving via FSDP full-state dict...")
-        with fsdp.state_dict_type(
+        print("Saving via FSDP get_state_dict...")
+        state_dict_config = FullStateDictConfig(offload_to_cpu=True)
+        state_dict = get_state_dict(
             trainer.model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True),
-        ):
-            trainer.save_model(final_dir)
+            state_dict_type=StateDictType.FULL_STATE_DICT,
+            state_dict_config=state_dict_config,
+        )
+        os.makedirs(final_dir, exist_ok=True)
+        torch.save(state_dict, os.path.join(final_dir, "pytorch_model.bin"))
+        trainer.model.config.save_pretrained(final_dir)
     else:
         trainer.save_model(final_dir)
     tokenizer.save_pretrained(final_dir)
