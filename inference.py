@@ -3,14 +3,16 @@ import argparse
 import torch
 import json
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, BitsAndBytesConfig
+from peft import PeftModel, get_peft_model, LoraConfig, TaskType
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run inference on fine-tuned model")
-    parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--adapter_path", type=str, default=None)
+    parser = argparse.ArgumentParser(description="Run inference on fine-tuned model from finetune.py")
+    parser.add_argument("--model_path", type=str, required=True,
+                        help="Path to the output directory from finetune.py")
+    parser.add_argument("--base_model", type=str, required=True,
+                        help="Base model name/path (same as used in finetune.py)")
     parser.add_argument("--csv_path", type=str, required=True)
     parser.add_argument("--held_out_file", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="./inference_results")
@@ -57,34 +59,60 @@ def load_test_data(args):
     return test_data, val_data, held_out_info
 
 def load_model_and_tokenizer(args):
-    # Prefer merged model if it exists
-    merged_dir = os.path.join(args.model_path, "merged")
-    load_dir = merged_dir if os.path.isdir(merged_dir) else args.model_path
-
-    print(f"Loading model from {load_dir}")
+    print(f"Loading model from {args.model_path}")
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     model_dtype = dtype_map[args.model_dtype]
-
-    tokenizer = AutoTokenizer.from_pretrained(load_dir)
+    
+    # Check if we have a trainer checkpoint (trainer_state.json indicates this is from finetune.py)
+    trainer_state_path = os.path.join(args.model_path, "trainer_state.json")
+    
+    if not os.path.exists(trainer_state_path):
+        raise ValueError(f"No trainer_state.json found in {args.model_path}. "
+                         "This script is designed to work with models saved by finetune.py")
+    
+    if not args.base_model:
+        raise ValueError("--base_model argument is required when loading from trainer checkpoints")
+    
+    print("📁 Loading model from finetune.py output")
+    
+    # Load tokenizer from the checkpoint directory
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        load_dir,
+    
+    print(f"Loading base model: {args.base_model}")
+    
+    # Find the latest checkpoint subdirectory
+    checkpoint_dirs = [d for d in os.listdir(args.model_path) if d.startswith("checkpoint-")]
+    if not checkpoint_dirs:
+        raise FileNotFoundError(f"No checkpoint directories found in {args.model_path}")
+    
+    # Use the latest checkpoint
+    latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.split("-")[1]))
+    checkpoint_path = os.path.join(args.model_path, latest_checkpoint)
+    print(f"Loading from latest checkpoint: {checkpoint_path}")
+    
+    # Load base model first
+    base_model = AutoModelForCausalLM.from_pretrained(
+        args.base_model,
         torch_dtype=model_dtype,
-        device_map="auto" if args.device=="auto" else None,
+        device_map="auto" if args.device == "auto" else None,
         trust_remote_code=True,
     )
-
-    # If we didn’t load a merged model, fall back to adapters
-    if load_dir == args.model_path:
-        adapter_config = os.path.join(args.adapter_path or args.model_path, "adapter_config.json")
-        if os.path.exists(adapter_config):
-            model = PeftModel.from_pretrained(model, args.adapter_path or args.model_path)
-            if args.merge_adapters:
-                print("Merging LoRA adapters into base model…")
-                model = model.merge_and_unload()
-    else:
-        print("✅ Using merged FSDP+PEFT model—no adapter merge needed.")
+    
+    # Load PEFT adapters on top of base model
+    model = PeftModel.from_pretrained(
+        base_model,
+        checkpoint_path,
+        torch_dtype=model_dtype,
+        device_map="auto" if args.device == "auto" else None,
+    )
+    print("✅ Loaded PEFT model from checkpoint")
+    
+    # Merge adapters if requested
+    if args.merge_adapters:
+        print("Merging LoRA adapters into base model...")
+        model = model.merge_and_unload()
+        print("✅ Adapters merged")
 
     model.config.use_cache = True
     model.eval()
@@ -152,9 +180,10 @@ def main():
     args = parse_args()
 
     print("="*50)
-    print("INFERENCE SCRIPT FOR FSDP+PEFT MODELS")
+    print("INFERENCE SCRIPT FOR FINETUNE.PY OUTPUTS")
     print("="*50)
     print(f"Model path: {args.model_path}")
+    print(f"Base model: {args.base_model}")
     print(f"CSV path: {args.csv_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Device: {args.device}")

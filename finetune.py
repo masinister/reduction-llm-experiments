@@ -24,16 +24,98 @@ class MemoryLoggerCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
         torch.cuda.empty_cache()
         peak = torch.cuda.max_memory_allocated() / 1024**3
-        print(f"Peak GPU mem this epoch: {peak:.2f} GB")
+        print(f"Peak GPU mem this epoch: {peak:.2f} GB")
 
 
 def print_memory_usage():
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
         resv = torch.cuda.memory_reserved() / 1024**3
-        print(f"GPU Memory — Allocated: {alloc:.2f} GB, Reserved: {resv:.2f} GB")
+        print(f"GPU Memory — Allocated: {alloc:.2f} GB, Reserved: {resv:.2f} GB")
     else:
         print("CUDA not available")
+
+def evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args):
+    """
+    Evaluate the model on the test set and save outputs to JSON.
+    
+    Args:
+        model: The trained model
+        tokenizer: The tokenizer
+        raw_dataset: The original dataset (before tokenization)
+        test_indices: List of test set indices
+        args: Training arguments containing output_dir and max_length
+    
+    Returns:
+        str: Path to the saved evaluation results JSON file
+    """
+    print(f"Evaluating model on {len(test_indices)} test samples...")
+    
+    # Set model to eval mode
+    model.eval()
+    
+    results = []
+    
+    with torch.no_grad():
+        for idx in test_indices:
+            sample = raw_dataset[idx]
+            
+            # Create the same prompt format used during training
+            prompt = (
+                "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
+                f"### Input:\nSource: {sample['source_text']}\nTarget: {sample['target_text']}\n### Output:\n"
+            )
+            
+            # Tokenize the prompt
+            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
+            
+            # Move to the same device as the model
+            device = next(model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Generate response
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=512,  # Allow for reasonable response length
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                    pad_token_id=tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+            
+            # Decode the generated text (removing the input prompt)
+            prompt_length = inputs['input_ids'].shape[1]
+            generated_tokens = outputs[0][prompt_length:]
+            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            
+            # Store the result
+            result = {
+                "sample_index": idx,
+                "source_text": sample["source_text"],
+                "target_text": sample["target_text"],
+                "ground_truth_reduction": sample["reduction_full_text"],
+                "generated_reduction": generated_text.strip(),
+                "prompt": prompt,
+            }
+            results.append(result)
+            
+            print(f"Processed sample {len(results)}/{len(test_indices)}")
+    
+    # Save results to JSON file
+    eval_results_path = os.path.join(args.output_dir, "test_set_evaluation.json")
+    with open(eval_results_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "evaluation_timestamp": datetime.datetime.now().isoformat(),
+            "model_name": args.model_name,
+            "test_set_size": len(test_indices),
+            "test_indices": test_indices,
+            "results": results
+        }, f, indent=2, ensure_ascii=False)
+    
+    print(f"Evaluation results saved to: {eval_results_path}")
+    return eval_results_path
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -100,7 +182,8 @@ def load_and_prepare(args, tokenizer):
         tok["labels"] = tok["input_ids"].copy()
         return tok
 
-    return splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
+    tokenized_splits = splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
+    return tokenized_splits, raw, test_idx
 
 
 def main():
@@ -138,10 +221,10 @@ def main():
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
-        device_map=None,  # Important: let FSDP handle device placement
+        device_map=None,
         trust_remote_code=True,
         quantization_config=bnb_config if torch.cuda.device_count() > 1 else None,
-        attn_implementation="sdpa",  # Use scaled dot product attention
+        attn_implementation="sdpa",
     )
     base_model.config.use_cache = False
 
@@ -152,12 +235,11 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["all-linear"],
     )
     model = get_peft_model(base_model, peft_cfg)
 
-
-    tokenized_ds = load_and_prepare(args, tokenizer)
+    tokenized_ds, raw_dataset, test_indices = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     training_args = TrainingArguments(
@@ -195,7 +277,8 @@ def main():
         eval_dataset=tokenized_ds["validation"],
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback()],
-    )    # Simplified checkpoint resumption
+    )
+    
     if args.resume:
         try:
             print("Attempting to resume from last checkpoint...")
@@ -206,16 +289,17 @@ def main():
     else:
         trainer.train()
         
+    # Evaluate model on test set after saving
+    print("Evaluating model on held-out test set...")
+    evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args)
+        
     print_memory_usage()
 
-    # Save final model and tokenizer
-    print("Saving final model and tokenizer...")
-    final_dir = os.path.join(args.output_dir, "final")
-    os.makedirs(final_dir, exist_ok=True)
+    print("Saving final checkpoint...")
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        trainer.save_model(final_dir)
-        tokenizer.save_pretrained(final_dir)
-        print("Done! Final model at:", final_dir)
+        trainer.save_state()
+        tokenizer.save_pretrained(args.output_dir)
+        print("Final checkpoint saved to:", args.output_dir)
 
 if __name__ == "__main__":
     main()
