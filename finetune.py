@@ -166,19 +166,7 @@ def main():
     )
     base_model.config.use_cache = False
 
-    # 2) Apply LoRA
-    peft_cfg = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        inference_mode=False,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    )
-    lora_model = get_peft_model(base_model, peft_cfg)
-
-
-    # 3) Wrap in FSDP (if >1 GPU)
+    # 2) Wrap in FSDP (if >1 GPU)
     mp_policy = MixedPrecision(
         param_dtype=dtype_map[args.model_dtype],
         reduce_dtype=dtype_map[args.model_dtype],
@@ -211,11 +199,23 @@ def main():
         "auto_wrap_policy":              auto_wrap_policy,
         "use_orig_params":               True
     }
-    model = (
-        FSDP(lora_model, **fsdp_cfg)
+    wrapped_model = (
+        FSDP(base_model, **fsdp_cfg)
         if torch.cuda.device_count() > 1
-        else lora_model.to("cuda")
+        else base_model.to("cuda")
     )
+
+    # 3) Apply LoRA
+    peft_cfg = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    )
+    lora_model = get_peft_model(wrapped_model, peft_cfg)
+
 
     tokenized_ds = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
