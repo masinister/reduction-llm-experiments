@@ -143,8 +143,6 @@ def main():
         attn_implementation="sdpa",  # Use scaled dot product attention
     )
     base_model.config.use_cache = False
-      # Enable gradient checkpointing for memory efficiency
-    base_model.gradient_checkpointing_enable()
 
     # Apply LoRA directly to the base model - let TrainingArguments handle FSDP
     peft_cfg = LoraConfig(
