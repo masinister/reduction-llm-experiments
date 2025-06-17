@@ -11,6 +11,15 @@
 #SBATCH --mem=256G
 #SBATCH --time=2:00:00
 
+# Usage: ./inference.sh [BASE_MODEL] [CSV_PATH] [MODEL_PATH] [INFERENCE_OUTPUT] [TEST_SET]
+# All parameters are optional and have defaults
+# 
+# BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.1-8B-Instruct)
+# CSV_PATH: Path to the CSV dataset file
+# MODEL_PATH: Path to the output directory from finetune.py (contains trainer_state.json and checkpoints)
+# INFERENCE_OUTPUT: Directory to save inference results
+# TEST_SET: Which set to run inference on (test, validation, or both)
+
 # Enable strict error handling
 set -euxo pipefail
 
@@ -30,16 +39,16 @@ module load cuda/12.4.0/3mdaov5
 source ~/venvs/reductions/bin/activate
 
 # Parameters from CLI or defaults
-MODEL_NAME=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
+BASE_MODEL=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
-OUTPUT_DIR=${3:-"./llama_finetune"}
+MODEL_PATH=${3:-"./llama_finetune"}
 INFERENCE_OUTPUT=${4:-"./inference_results"}
 TEST_SET=${5:-"test"}
 
 echo ""
-echo "Model name: $MODEL_NAME"
+echo "Base model: $BASE_MODEL"
 echo "CSV path: $CSV_PATH"
-echo "Model output dir: $OUTPUT_DIR"
+echo "Model path (finetune.py output): $MODEL_PATH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Test set: $TEST_SET"
 echo ""
@@ -50,7 +59,7 @@ if [[ ! -f "$CSV_PATH" ]]; then
   exit 1
 fi
 
-HELD_OUT_FILE="$OUTPUT_DIR/held_out_indices.json"
+HELD_OUT_FILE="$MODEL_PATH/held_out_indices.json"
 if [[ ! -f "$HELD_OUT_FILE" ]]; then
     echo "ERROR: held_out_indices.json not found at $HELD_OUT_FILE"
     echo "This should have been created during training."
@@ -58,41 +67,28 @@ if [[ ! -f "$HELD_OUT_FILE" ]]; then
 fi
 echo "Found held-out indices file."
 
-# Run inference
-if [[ -d "$OUTPUT_DIR/merged" ]]; then
-    echo "Running inference with merged model..."
-    python inference.py \
-        --model_path "$OUTPUT_DIR/merged" \
-        --csv_path "$CSV_PATH" \
-        --output_dir "$INFERENCE_OUTPUT" \
-        --test_set "$TEST_SET" \
-        --device "auto" \
-        --model_dtype "bfloat16" \
-        --max_new_tokens 512 \
-        --temperature 0.7 \
-        --do_sample
-
-elif [[ -d "$OUTPUT_DIR/final" ]]; then
-    echo "Merged model not found. Using adapters and merging on the fly..."
-    python inference.py \
-        --model_path "$OUTPUT_DIR/final" \
-        --csv_path "$CSV_PATH" \
-        --output_dir "$INFERENCE_OUTPUT" \
-        --test_set "$TEST_SET" \
-        --device "auto" \
-        --model_dtype "bfloat16" \
-        --max_new_tokens 512 \
-        --temperature 0.7 \
-        --do_sample \
-        --merge_adapters
-
-else
-    echo "ERROR: No trained model found in $OUTPUT_DIR"
-    echo "Expected to find either:"
-    echo "  - $OUTPUT_DIR/merged"
-    echo "  - $OUTPUT_DIR/final"
+# Check if trainer_state.json exists (indicates finetune.py output)
+TRAINER_STATE_FILE="$MODEL_PATH/trainer_state.json"
+if [[ ! -f "$TRAINER_STATE_FILE" ]]; then
+    echo "ERROR: trainer_state.json not found at $TRAINER_STATE_FILE"
+    echo "This script requires models trained with finetune.py"
     exit 1
 fi
+echo "Found trainer state file - confirmed finetune.py output."
+
+# Run inference with the new simplified approach
+echo "Running inference with PEFT model from finetune.py output..."
+python inference.py \
+    --model_path "$MODEL_PATH" \
+    --base_model "$BASE_MODEL" \
+    --csv_path "$CSV_PATH" \
+    --output_dir "$INFERENCE_OUTPUT" \
+    --test_set "$TEST_SET" \
+    --device "auto" \
+    --model_dtype "bfloat16" \
+    --max_new_tokens 512 \
+    --temperature 0.7 \
+    --do_sample
 
 echo ""
 echo "✅ Inference completed at $(date)"

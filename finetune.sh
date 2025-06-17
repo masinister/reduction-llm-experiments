@@ -136,17 +136,15 @@ torchrun \
   --lora_dropout 0.05 \
   --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
-  --cpu_offload \
-  --fsdp_sharding_strategy "full_shard" \
-  --fsdp_activation_checkpointing \
-  --fsdp_auto_wrap
+  --cpu_offload
 
 echo ""
 echo "✅ Fine-tuning completed at $(date)"
 echo "=================================================="
 echo "Outputs:"
 echo "  - Model directory: $OUTPUT_DIR"
-echo "  - Final model:     $OUTPUT_DIR/final"
+echo "  - Latest checkpoint: $OUTPUT_DIR/checkpoint-*"
+echo "  - Held-out indices: $OUTPUT_DIR/held_out_indices.json"
 echo "=================================================="
 echo "To run inference:"
 echo "  ./inference.sh \"$MODEL_NAME\" \"$CSV_PATH\" \"$OUTPUT_DIR\" ./inference_results test"
