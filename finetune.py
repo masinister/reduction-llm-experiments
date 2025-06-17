@@ -137,15 +137,15 @@ def load_and_prepare(args, tokenizer):
 
 def main():
     args = parse_args()
-    print_memory_usage()
-
-    # Initialize distributed training if using multiple GPUs
+    
     if torch.cuda.device_count() > 1:
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl")
-        # Ensure each process uses the correct GPU
-        dist.init_process_group(backend="nccl")
-        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+        # Set the device for this process
+        if "LOCAL_RANK" in os.environ:
+            torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+    print_memory_usage()
 
     os.makedirs(args.output_dir, exist_ok=True)
     if not os.path.isdir(args.model_name):
