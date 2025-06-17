@@ -148,6 +148,7 @@ def main():
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
         low_cpu_mem_usage=True,
+        device_map="auto", 
         trust_remote_code=True,
     )
     model.config.use_cache = False
@@ -161,6 +162,7 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
     model = get_peft_model(model, peft_cfg)
+    model.gradient_checkpointing_enable()
 
     tokenized_ds, _ = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
@@ -207,9 +209,12 @@ def main():
 
     if args.resume:
         ckpt_dir = os.path.join(args.output_dir, "dcp_ckpt")
-        print(f"Resuming from checkpoint {ckpt_dir}")
-        app_state = AppState(trainer.model, trainer.optimizer)
-        dcp.load({"app": app_state}, checkpoint_id=ckpt_dir)
+        try:
+            print(f"Resuming from {ckpt_dir}")
+            app_state = AppState(trainer.model, trainer.optimizer)
+            dcp.load({"app": app_state}, checkpoint_id=ckpt_dir)
+        except Exception as e:
+            print(f"⚠️ Resume failed: {e}. Starting fresh.")
 
     trainer.train()
     print_memory_usage()
