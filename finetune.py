@@ -165,7 +165,6 @@ def main():
         trust_remote_code=True,
     )
     base_model.config.use_cache = False
-    base_model.gradient_checkpointing_enable()
 
     # 2) Wrap in FSDP (if >1 GPU)
     mp_policy = MixedPrecision(
