@@ -193,12 +193,13 @@ def main():
     cpu_offload_config = CPUOffload(offload_params=True) if args.cpu_offload else None
 
     fsdp_cfg = {
-        "device_id": 0,
-        "sync_module_states": True,
+        "device_id":                     0,
+        "sync_module_states":            True,
         "sharding_strategy":             sharding_strategy_map[args.fsdp_sharding_strategy],
         "mixed_precision":               mp_policy,
         "cpu_offload":                   cpu_offload_config,
         "auto_wrap_policy":              auto_wrap_policy,
+        "use_orig_params":               True
     }
     wrapped_model = (
         FSDP(base_model, **fsdp_cfg)
