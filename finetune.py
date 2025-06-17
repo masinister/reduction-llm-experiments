@@ -3,6 +3,7 @@ import argparse
 import json
 import datetime
 import random
+from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -165,18 +166,19 @@ def main():
     )
     base_model.config.use_cache = False
     base_model.gradient_checkpointing_enable()
-    
+
     # 2) Wrap in FSDP (if >1 GPU)
     mp_policy = MixedPrecision(
         param_dtype=dtype_map[args.model_dtype],
         reduce_dtype=dtype_map[args.model_dtype],
         buffer_dtype=dtype_map[args.model_dtype]
-    )
-
+    )    
+    
     # Configure auto wrap policy for LLaMA models
     auto_wrap_policy = None
     if args.fsdp_auto_wrap:
-        auto_wrap_policy = transformer_auto_wrap_policy(
+        auto_wrap_policy = partial(
+            transformer_auto_wrap_policy,
             transformer_layer_cls=LlamaDecoderLayer,
         )
 
