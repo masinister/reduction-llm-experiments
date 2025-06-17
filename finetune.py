@@ -199,7 +199,7 @@ def main():
         "mixed_precision":               mp_policy,
         "cpu_offload":                   cpu_offload_config,
         "auto_wrap_policy":              auto_wrap_policy,
-        "use_orig_params":               True
+        "use_orig_params":               False
     }
     wrapped_model = (
         FSDP(base_model, **fsdp_cfg)
