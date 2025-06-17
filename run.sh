@@ -127,7 +127,6 @@ torchrun \
   --model_dtype bfloat16 \
   --cpu_offload \
   --fsdp_sharding_strategy "full_shard" \
-  --fsdp_mixed_precision \
   --fsdp_activation_checkpointing \
   --fsdp_auto_wrap
 
