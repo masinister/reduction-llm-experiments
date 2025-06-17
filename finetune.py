@@ -18,7 +18,7 @@ from transformers import (
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 import torch.distributed.checkpoint as dcp
@@ -78,7 +78,6 @@ def parse_args():
         default="full_shard",
         choices=["full_shard", "shard_grad_op", "hybrid_shard", "no_shard"],
     )
-    p.add_argument("--fsdp_mixed_precision", action="store_true", default=True)
     p.add_argument("--fsdp_activation_checkpointing", action="store_true", default=True)
     p.add_argument("--fsdp_auto_wrap", action="store_true", default=True)
     p.add_argument("--model_dtype", type=str, default="bfloat16",
@@ -167,9 +166,15 @@ def main():
     base_model.gradient_checkpointing_enable()
 
     # 2) Wrap in FSDP (if >1 GPU)
+    mp_policy = MixedPrecision(
+        param_dtype=dtype_map[args.model_dtype],
+        reduce_dtype=dtype_map[args.model_dtype],
+        buffer_dtype=dtype_map[args.model_dtype]
+    )
+
     fsdp_cfg = {
         "sharding_strategy":             args.fsdp_sharding_strategy,
-        "mixed_precision":               args.fsdp_mixed_precision,
+        "mixed_precision":               mp_policy,
         "cpu_offload":                   args.cpu_offload,
         "auto_wrap_policy":              transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
     }
