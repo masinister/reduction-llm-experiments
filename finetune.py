@@ -5,6 +5,7 @@ import datetime
 import random
 
 import torch
+import torch.distributed as dist
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -137,6 +138,14 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     print_memory_usage()
+
+    # Initialize distributed training if using multiple GPUs
+    if torch.cuda.device_count() > 1:
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+        # Ensure each process uses the correct GPU
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
     os.makedirs(args.output_dir, exist_ok=True)
     if not os.path.isdir(args.model_name):
