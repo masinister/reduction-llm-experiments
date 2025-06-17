@@ -147,12 +147,11 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # 1) Load the base model on CPU
+    # 1) Load the base model
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
         device_map=None,
-        torch_device="cpu",
         trust_remote_code=True,
     )
     base_model.config.use_cache = False
