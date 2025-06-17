@@ -17,9 +17,12 @@ from transformers import (
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-import torch.distributed.checkpoint as dcp
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
+import torch.distributed.checkpoint as dcp
+from accelerate.utils import merge_fsdp_weights
+
 
 # Memory logging callback remains unchanged
 class MemoryLoggerCallback(TrainerCallback):
@@ -131,7 +134,6 @@ def load_and_prepare(args, tokenizer):
     return splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
 
 
-
 def main():
     args = parse_args()
     print_memory_usage()
@@ -144,15 +146,33 @@ def main():
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
-    model = AutoModelForCausalLM.from_pretrained(
+
+    # 1) Load the base model on CPU
+    base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
-        low_cpu_mem_usage=True,
-        device_map="auto", 
+        device_map=None,
+        torch_device="cpu",
         trust_remote_code=True,
     )
-    model.config.use_cache = False
+    base_model.config.use_cache = False
+    base_model.gradient_checkpointing_enable()
 
+    # 2) Wrap in FSDP (if >1 GPU)
+    fsdp_cfg = {
+        "sharding_strategy":             args.fsdp_sharding_strategy,
+        "mixed_precision":               args.fsdp_mixed_precision,
+        "cpu_offload":                   args.cpu_offload,
+        "activation_checkpointing":      args.fsdp_activation_checkpointing,
+        "auto_wrap_policy":              transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
+    }
+    wrapped_model = (
+        FSDP(base_model, **fsdp_cfg)
+        if torch.cuda.device_count() > 1
+        else base_model.to("cuda")
+    )
+
+    # 3) Now apply LoRA
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -161,21 +181,10 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    model = get_peft_model(model, peft_cfg)
-    model.gradient_checkpointing_enable()
+    model = get_peft_model(wrapped_model, peft_cfg)
 
     tokenized_ds = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-
-    fsdp_cfg = None
-    if torch.cuda.device_count() > 1:
-        fsdp_cfg = {
-            "sharding_strategy": args.fsdp_sharding_strategy,
-            "mixed_precision": args.fsdp_mixed_precision,
-            "cpu_offload": args.cpu_offload,
-            "activation_checkpointing": args.fsdp_activation_checkpointing,
-            "auto_wrap_policy": transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
-        }
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -225,10 +234,21 @@ def main():
     print(f"Saving checkpoint via DCP to {final_ckpt}...")
     dcp.save({"app": app_state}, checkpoint_id=final_ckpt)
 
-    # For single-GPU fallback, also save final model
+    print("Merging FSDP shards into a single model...")
+    if trainer.args.local_rank == 0:
+        merge_fsdp_weights(
+            checkpoint_dir=os.path.join(args.output_dir, "dcp_ckpt"),
+            output_path=os.path.join(args.output_dir, "merged"),
+            safe_serialization=True,
+            remove_checkpoint_dir=False
+        )
+    torch.distributed.barrier()
+    print("✔️ Merged model available at:", os.path.join(args.output_dir, "merged"))
+
+    print("Saving final model and tokenizer...")
     final_dir = os.path.join(args.output_dir, "final")
     os.makedirs(final_dir, exist_ok=True)
-    if torch.cuda.device_count() <= 1:
+    if trainer.args.local_rank == 0:
         trainer.save_model(final_dir)
         tokenizer.save_pretrained(final_dir)
         print("Done! Final model at:", final_dir)

@@ -56,47 +56,40 @@ def load_test_data(args):
 
     return test_data, val_data, held_out_info
 
-
 def load_model_and_tokenizer(args):
-    print(f"Loading model from {args.model_path}")
+    # Prefer merged model if it exists
+    merged_dir = os.path.join(args.model_path, "merged")
+    load_dir = merged_dir if os.path.isdir(merged_dir) else args.model_path
 
+    print(f"Loading model from {load_dir}")
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     model_dtype = dtype_map[args.model_dtype]
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(load_dir)
+    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
+        load_dir,
         torch_dtype=model_dtype,
-        device_map="auto" if args.device == "auto" else None,
+        device_map="auto" if args.device=="auto" else None,
         trust_remote_code=True,
     )
 
-    adapter_path = args.adapter_path or args.model_path
-    adapter_config_file = os.path.join(adapter_path, "adapter_config.json")
-
-    if os.path.exists(adapter_config_file):
-        print(f"Loading LoRA adapters from {adapter_path}")
-        model = PeftModel.from_pretrained(model, adapter_path)
-        if args.merge_adapters:
-            print("Merging adapters...")
-            model = model.merge_and_unload()
-        else:
-            print("⚠️ Adapters loaded but not merged. This may impact inference speed.")
+    # If we didn’t load a merged model, fall back to adapters
+    if load_dir == args.model_path:
+        adapter_config = os.path.join(args.adapter_path or args.model_path, "adapter_config.json")
+        if os.path.exists(adapter_config):
+            model = PeftModel.from_pretrained(model, args.adapter_path or args.model_path)
+            if args.merge_adapters:
+                print("Merging LoRA adapters into base model…")
+                model = model.merge_and_unload()
     else:
-        print("No adapters found. Using base model only.")
+        print("✅ Using merged FSDP+PEFT model—no adapter merge needed.")
 
-    # Ensure caching is enabled
     model.config.use_cache = True
     model.eval()
-
-    # Final PEFT check
-    if isinstance(model, PeftModel) and args.merge_adapters:
-        raise RuntimeError("PEFT wrapper still present — merge_and_unload() likely failed.")
-
     return model, tokenizer
+
 
 
 def run_inference(model, tokenizer, dataset, args):
