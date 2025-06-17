@@ -19,7 +19,7 @@ from transformers import (
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy, CPUOffload
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
@@ -173,14 +173,15 @@ def main():
         reduce_dtype=dtype_map[args.model_dtype],
         buffer_dtype=dtype_map[args.model_dtype]
     )    
-      # Configure auto wrap policy for LLaMA models
+    
+    # Configure auto wrap policy for LLaMA models
     auto_wrap_policy = None
     if args.fsdp_auto_wrap:
         auto_wrap_policy = partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls=(LlamaDecoderLayer,),
-        )
-
+        )   
+        
     # Map string sharding strategy to enum
     sharding_strategy_map = {
         "full_shard": ShardingStrategy.FULL_SHARD,
@@ -189,10 +190,13 @@ def main():
         "no_shard": ShardingStrategy.NO_SHARD,
     }
 
+    # Configure CPU offload
+    cpu_offload_config = CPUOffload(offload_params=True) if args.cpu_offload else None
+
     fsdp_cfg = {
         "sharding_strategy":             sharding_strategy_map[args.fsdp_sharding_strategy],
         "mixed_precision":               mp_policy,
-        "cpu_offload":                   args.cpu_offload,
+        "cpu_offload":                   cpu_offload_config,
         "auto_wrap_policy":              auto_wrap_policy,
     }
     wrapped_model = (
