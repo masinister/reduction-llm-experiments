@@ -175,7 +175,7 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    lora_model = get_peft_model(wrapped_model, peft_cfg)
+    lora_model = get_peft_model(base_model, peft_cfg)
 
 
     # 3) Wrap in FSDP (if >1 GPU)
