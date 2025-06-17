@@ -130,6 +130,7 @@ def main():
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
+        bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
     )
 
     # 1) Load the base model with proper FSDP-compatible settings
