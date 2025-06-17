@@ -17,8 +17,34 @@ from transformers import (
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-import torch.distributed.fsdp as fsdp
+import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.distributed.checkpoint.stateful import Stateful
+
+# Memory logging callback remains unchanged
+class MemoryLoggerCallback(TrainerCallback):
+    def on_epoch_end(self, args, state, control, **kwargs):
+        torch.cuda.empty_cache()
+        peak = torch.cuda.max_memory_allocated() / 1024**3
+        print(f"Peak GPU mem this epoch: {peak:.2f} GB")
+
+# Stateful wrapper for model (and optimizer if used)
+class AppState(Stateful):
+    def __init__(self, model, optimizer=None):
+        self.model = model
+        self.optimizer = optimizer
+
+    def state_dict(self):
+        model_sd, optim_sd = get_state_dict(self.model, self.optimizer)
+        return {"model": model_sd, "optim": optim_sd}
+
+    def load_state_dict(self, state_dict):
+        set_state_dict(
+            self.model,
+            self.optimizer,
+            model_state_dict=state_dict.get("model"),
+            optim_state_dict=state_dict.get("optim", None),
+        )
 
 def print_memory_usage():
     if torch.cuda.is_available():
@@ -27,14 +53,6 @@ def print_memory_usage():
         print(f"GPU Memory — Allocated: {alloc:.2f} GB, Reserved: {resv:.2f} GB")
     else:
         print("CUDA not available")
-
-
-class MemoryLoggerCallback(TrainerCallback):
-    def on_epoch_end(self, args, state, control, **kwargs):
-        torch.cuda.empty_cache()
-        peak = torch.cuda.max_memory_allocated() / 1024**3
-        print(f"Peak GPU mem this epoch: {peak:.2f} GB")
-
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -62,8 +80,8 @@ def parse_args():
     p.add_argument("--model_dtype", type=str, default="bfloat16",
                    choices=["float16", "bfloat16", "float32"])
     p.add_argument("--cpu_offload", action="store_true")
+    p.add_argument("--resume", action="store_true", help="Resume from latest DCP checkpoint")
     return p.parse_args()
-
 
 def load_and_prepare(args, tokenizer):
     csv_path = os.path.expanduser(args.csv_path)
@@ -71,20 +89,19 @@ def load_and_prepare(args, tokenizer):
         raise FileNotFoundError(csv_path)
 
     raw = load_dataset("csv", data_files=csv_path, split="train")
-    total = len(raw)
-    if total < 10:
-        raise ValueError("Need at least 10 examples for splits")
+    if len(raw) < 10:
+        raise ValueError("Require at least 10 samples")
 
     random.seed(42)
-    idx = list(range(total))
+    idx = list(range(len(raw)))
     random.shuffle(idx)
-    held = idx[:10]
-    val_idx, test_idx = held[:5], held[5:]
+    val_idx, test_idx = idx[:5], idx[5:10]
     train_idx = idx[10:]
 
     os.makedirs(args.output_dir, exist_ok=True)
+
     held_info = {
-        "dataset_size": total,
+        "dataset_size": len(raw),
         "csv_path": csv_path,
         "validation_indices": val_idx,
         "test_indices": test_idx,
@@ -111,9 +128,8 @@ def load_and_prepare(args, tokenizer):
         tok["labels"] = tok["input_ids"].copy()
         return tok
 
-    tokenized = splits.map(tokenize_fn, batched=False,
-                           remove_columns=splits["train"].column_names)
-    return tokenized, splits
+    return splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
+
 
 
 def main():
@@ -127,11 +143,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 
-    dtype_map = {
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-        "float32": torch.float32,
-    }
+    dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
@@ -160,8 +172,7 @@ def main():
             "mixed_precision": args.fsdp_mixed_precision,
             "cpu_offload": args.cpu_offload,
             "activation_checkpointing": args.fsdp_activation_checkpointing,
-            "auto_wrap_policy": transformer_auto_wrap_policy
-                if args.fsdp_auto_wrap else None,
+            "auto_wrap_policy": transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
         }
 
     training_args = TrainingArguments(
@@ -194,23 +205,28 @@ def main():
         callbacks=[MemoryLoggerCallback()],
     )
 
+    if args.resume:
+        ckpt_dir = os.path.join(args.output_dir, "dcp_ckpt")
+        print(f"Resuming from checkpoint {ckpt_dir}")
+        app_state = AppState(trainer.model, trainer.optimizer)
+        dcp.load({"app": app_state}, checkpoint_id=ckpt_dir)
+
     trainer.train()
     print_memory_usage()
 
+    # DCP-based saving
+    final_ckpt = os.path.join(args.output_dir, "dcp_ckpt")
+    app_state = AppState(trainer.model, trainer.optimizer)
+    print(f"Saving checkpoint via DCP to {final_ckpt}...")
+    dcp.save({"app": app_state}, checkpoint_id=final_ckpt)
+
+    # For single-GPU fallback, also save final model
     final_dir = os.path.join(args.output_dir, "final")
     os.makedirs(final_dir, exist_ok=True)
-    
-    if torch.cuda.device_count() > 1:
-        print("Saving via FSDP get_state_dict...")
-        model_state_dict, _ = get_state_dict(trainer.model)
-        torch.save(model_state_dict, os.path.join(final_dir, "pytorch_model.bin"))
-        trainer.model.config.save_pretrained(final_dir)
-    else:
+    if torch.cuda.device_count() <= 1:
         trainer.save_model(final_dir)
-
-    tokenizer.save_pretrained(final_dir)
-    print("Done! Final model at:", final_dir)
-
+        tokenizer.save_pretrained(final_dir)
+        print("Done! Final model at:", final_dir)
 
 if __name__ == "__main__":
     main()
