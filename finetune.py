@@ -19,6 +19,7 @@ from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 import torch.distributed.checkpoint as dcp
@@ -164,7 +165,7 @@ def main():
     )
     base_model.config.use_cache = False
     base_model.gradient_checkpointing_enable()
-
+    
     # 2) Wrap in FSDP (if >1 GPU)
     mp_policy = MixedPrecision(
         param_dtype=dtype_map[args.model_dtype],
@@ -172,11 +173,18 @@ def main():
         buffer_dtype=dtype_map[args.model_dtype]
     )
 
+    # Configure auto wrap policy for LLaMA models
+    auto_wrap_policy = None
+    if args.fsdp_auto_wrap:
+        auto_wrap_policy = transformer_auto_wrap_policy(
+            transformer_layer_cls=LlamaDecoderLayer,
+        )
+
     fsdp_cfg = {
         "sharding_strategy":             args.fsdp_sharding_strategy,
         "mixed_precision":               mp_policy,
         "cpu_offload":                   args.cpu_offload,
-        "auto_wrap_policy":              transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
+        "auto_wrap_policy":              auto_wrap_policy,
     }
     wrapped_model = (
         FSDP(base_model, **fsdp_cfg)
