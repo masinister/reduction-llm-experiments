@@ -120,7 +120,8 @@ def main():
         args.model_name = snapshot_download(repo_id=args.model_name)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
@@ -179,7 +180,6 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        gradient_checkpointing=True,
         fsdp="full_shard auto_wrap" + (" offload" if args.cpu_offload else ""),
         fsdp_config={
             "backward_prefetch": "backward_pre",
