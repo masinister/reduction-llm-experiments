@@ -179,7 +179,7 @@ def main():
     if args.fsdp_auto_wrap:
         auto_wrap_policy = partial(
             transformer_auto_wrap_policy,
-            transformer_layer_cls=LlamaDecoderLayer,
+            transformer_layer_cls=(LlamaDecoderLayer,),
         )
 
     fsdp_cfg = {
