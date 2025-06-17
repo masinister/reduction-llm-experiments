@@ -162,7 +162,6 @@ def main():
         "sharding_strategy":             args.fsdp_sharding_strategy,
         "mixed_precision":               args.fsdp_mixed_precision,
         "cpu_offload":                   args.cpu_offload,
-        "activation_checkpointing":      args.fsdp_activation_checkpointing,
         "auto_wrap_policy":              transformer_auto_wrap_policy if args.fsdp_auto_wrap else None,
     }
     wrapped_model = (
