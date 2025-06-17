@@ -45,7 +45,7 @@ CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 OUTPUT_DIR=${3:-"./llama_finetune"}
 BATCH_SIZE=${4:-1}
 GRAD_ACCUM=${5:-16}
-LEARNING_RATE=${6:-1e-4}
+LEARNING_RATE=${6:-2e-4}
 EPOCHS=${7:-20}
 MAX_LENGTH=${8:-2048}
 INFERENCE_OUTPUT=${9:-"./inference_results"}
@@ -95,6 +95,10 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
 export TORCH_CPP_LOG_LEVEL=ERROR
 
+# Required environment variables for FSDP + Q-LoRA (from fixed finetune.py)
+export ACCELERATE_USE_FSDP=1
+export FSDP_CPU_RAM_EFFICIENT_LOADING=1
+
 echo "Environment configured for FSDP fine-tuning."
 
 # ========================================
@@ -125,10 +129,7 @@ torchrun \
   --lora_dropout 0.05 \
   --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
-  --cpu_offload \
-  --fsdp_sharding_strategy "full_shard" \
-  --fsdp_activation_checkpointing \
-  --fsdp_auto_wrap
+  --cpu_offload
 
 FINETUNE_END=$(date)
 echo ""
@@ -164,11 +165,11 @@ echo "Inference started at: $INFERENCE_START"
 # Create inference output directory
 mkdir -p "$INFERENCE_OUTPUT"
 
-# Run inference - check for merged model first, then use adapters
-if [[ -d "$OUTPUT_DIR/merged" ]]; then
-    echo "Running inference with merged model..."
+# Run inference - use the final model directory with adapters
+if [[ -d "$OUTPUT_DIR/final" ]]; then
+    echo "Running inference with saved model and adapters..."
     python inference.py \
-        --model_path "$OUTPUT_DIR/merged" \
+        --model_path "$OUTPUT_DIR/final" \
         --csv_path "$CSV_PATH" \
         --output_dir "$INFERENCE_OUTPUT" \
         --test_set "$TEST_SET" \
@@ -177,10 +178,8 @@ if [[ -d "$OUTPUT_DIR/merged" ]]; then
         --max_new_tokens 512 \
         --temperature 0.7 \
         --do_sample
-
-elif [[ -d "$OUTPUT_DIR/final" ]]; then
-    echo "Merged model not found. Using adapters and merging on the fly..."
-    python inference.py \
-        --model_path "$OUTPUT_DIR/final" \
-        --csv_path "$CSV_PATH" \
-        --output_dir \
+else
+    echo "ERROR: Final model not found at $OUTPUT_DIR/final"
+    echo "Fine-tuning may have failed."
+    exit 1
+fi

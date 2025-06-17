@@ -3,7 +3,6 @@ import argparse
 import json
 import datetime
 import random
-from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -15,17 +14,10 @@ from transformers import (
     Trainer,
     DataCollatorForLanguageModeling,
     TrainerCallback,
+    BitsAndBytesConfig,
 )
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy, CPUOffload
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
-from torch.distributed.checkpoint.stateful import Stateful
-import torch.distributed.checkpoint as dcp
-from accelerate.utils import merge_fsdp_weights
-
 
 # Memory logging callback remains unchanged
 class MemoryLoggerCallback(TrainerCallback):
@@ -34,23 +26,6 @@ class MemoryLoggerCallback(TrainerCallback):
         peak = torch.cuda.max_memory_allocated() / 1024**3
         print(f"Peak GPU mem this epoch: {peak:.2f} GB")
 
-# Stateful wrapper for model (and optimizer if used)
-class AppState(Stateful):
-    def __init__(self, model, optimizer=None):
-        self.model = model
-        self.optimizer = optimizer
-
-    def state_dict(self):
-        model_sd, optim_sd = get_state_dict(self.model, self.optimizer)
-        return {"model": model_sd, "optim": optim_sd}
-
-    def load_state_dict(self, state_dict):
-        set_state_dict(
-            self.model,
-            self.optimizer,
-            model_state_dict=state_dict.get("model"),
-            optim_state_dict=state_dict.get("optim", None),
-        )
 
 def print_memory_usage():
     if torch.cuda.is_available():
@@ -68,20 +43,12 @@ def parse_args():
     p.add_argument("--per_device_train_batch_size", type=int, default=1)
     p.add_argument("--per_device_eval_batch_size", type=int, default=1)
     p.add_argument("--gradient_accumulation_steps", type=int, default=8)
-    p.add_argument("--learning_rate", type=float, default=1e-4)
+    p.add_argument("--learning_rate", type=float, default=2e-4)
     p.add_argument("--num_train_epochs", type=int, default=3)
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=int, default=16)
     p.add_argument("--lora_dropout", type=float, default=0.05)
-    p.add_argument("--max_length", type=int, default=512)
-    p.add_argument(
-        "--fsdp_sharding_strategy",
-        type=str,
-        default="full_shard",
-        choices=["full_shard", "shard_grad_op", "hybrid_shard", "no_shard"],
-    )
-    p.add_argument("--fsdp_activation_checkpointing", action="store_true", default=True)
-    p.add_argument("--fsdp_auto_wrap", action="store_true", default=True)
+    p.add_argument("--max_length", type=int, default=2048)
     p.add_argument("--model_dtype", type=str, default="bfloat16",
                    choices=["float16", "bfloat16", "float32"])
     p.add_argument("--cpu_offload", action="store_true")
@@ -157,57 +124,28 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # 1) Load the base model
+    # Configure quantization for Q-LoRA
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
+    )
+
+    # 1) Load the base model with proper FSDP-compatible settings
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
-        device_map=None,
+        device_map=None,  # Important: let FSDP handle device placement
         trust_remote_code=True,
+        quantization_config=bnb_config if torch.cuda.device_count() > 1 else None,
+        attn_implementation="sdpa",  # Use scaled dot product attention
     )
     base_model.config.use_cache = False
+      # Enable gradient checkpointing for memory efficiency
+    base_model.gradient_checkpointing_enable()
 
-    # 2) Wrap in FSDP (if >1 GPU)
-    mp_policy = MixedPrecision(
-        param_dtype=dtype_map[args.model_dtype],
-        reduce_dtype=dtype_map[args.model_dtype],
-        buffer_dtype=dtype_map[args.model_dtype]
-    )    
-    
-    # Configure auto wrap policy for LLaMA models
-    auto_wrap_policy = None
-    if args.fsdp_auto_wrap:
-        auto_wrap_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls=(LlamaDecoderLayer,),
-        )   
-        
-    # Map string sharding strategy to enum
-    sharding_strategy_map = {
-        "full_shard": ShardingStrategy.FULL_SHARD,
-        "shard_grad_op": ShardingStrategy.SHARD_GRAD_OP,
-        "hybrid_shard": ShardingStrategy.HYBRID_SHARD,
-        "no_shard": ShardingStrategy.NO_SHARD,
-    }
-
-    # Configure CPU offload
-    cpu_offload_config = CPUOffload(offload_params=True) if args.cpu_offload else None
-
-    fsdp_cfg = {
-        "device_id":                     torch.cuda.current_device(),
-        "sync_module_states":            True,
-        "sharding_strategy":             sharding_strategy_map[args.fsdp_sharding_strategy],
-        "mixed_precision":               mp_policy,
-        "cpu_offload":                   cpu_offload_config,
-        "auto_wrap_policy":              auto_wrap_policy,
-        "use_orig_params":               False
-    }
-    wrapped_model = (
-        FSDP(base_model, **fsdp_cfg)
-        if torch.cuda.device_count() > 1
-        else base_model.to("cuda")
-    )
-
-    # 3) Apply LoRA
+    # Apply LoRA directly to the base model - let TrainingArguments handle FSDP
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -216,7 +154,7 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    model = get_peft_model(wrapped_model, peft_cfg)
+    model = get_peft_model(base_model, peft_cfg)
 
 
     tokenized_ds = load_and_prepare(args, tokenizer)
@@ -237,10 +175,18 @@ def main():
         label_names=["labels"],
         dataloader_pin_memory=False,
         remove_unused_columns=False,
-        optim="adamw_torch_fused",
-        max_grad_norm=1.0,
-        fsdp=args.fsdp_sharding_strategy if fsdp_cfg else None,
-        fsdp_config=fsdp_cfg,
+        optim="adamw_torch",
+        max_grad_norm=0.3,
+        bf16=args.model_dtype == "bfloat16",
+        fp16=args.model_dtype == "float16",
+        tf32=True,
+        gradient_checkpointing=True,
+        fsdp="full_shard auto_wrap" + (" offload" if args.cpu_offload else ""),
+        fsdp_config={
+            "backward_prefetch": "backward_pre",
+            "forward_prefetch": "false", 
+            "use_orig_params": "false",
+        },
     )
 
     trainer = Trainer(
@@ -250,41 +196,24 @@ def main():
         eval_dataset=tokenized_ds["validation"],
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback()],
-    )
-
+    )    # Simplified checkpoint resumption
     if args.resume:
-        ckpt_dir = os.path.join(args.output_dir, "dcp_ckpt")
         try:
-            print(f"Resuming from {ckpt_dir}")
-            app_state = AppState(trainer.model, trainer.optimizer)
-            dcp.load({"app": app_state}, checkpoint_id=ckpt_dir)
+            print("Attempting to resume from last checkpoint...")
+            trainer.train(resume_from_checkpoint=True)
         except Exception as e:
             print(f"⚠️ Resume failed: {e}. Starting fresh.")
-
-    trainer.train()
+            trainer.train()
+    else:
+        trainer.train()
+        
     print_memory_usage()
 
-    # DCP-based saving
-    final_ckpt = os.path.join(args.output_dir, "dcp_ckpt")
-    app_state = AppState(trainer.model, trainer.optimizer)
-    print(f"Saving checkpoint via DCP to {final_ckpt}...")
-    dcp.save({"app": app_state}, checkpoint_id=final_ckpt)
-
-    print("Merging FSDP shards into a single model...")
-    if trainer.args.local_rank == 0:
-        merge_fsdp_weights(
-            checkpoint_dir=os.path.join(args.output_dir, "dcp_ckpt"),
-            output_path=os.path.join(args.output_dir, "merged"),
-            safe_serialization=True,
-            remove_checkpoint_dir=False
-        )
-    torch.distributed.barrier()
-    print("✔️ Merged model available at:", os.path.join(args.output_dir, "merged"))
-
+    # Save final model and tokenizer
     print("Saving final model and tokenizer...")
     final_dir = os.path.join(args.output_dir, "final")
     os.makedirs(final_dir, exist_ok=True)
-    if trainer.args.local_rank == 0:
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         trainer.save_model(final_dir)
         tokenizer.save_pretrained(final_dir)
         print("Done! Final model at:", final_dir)
