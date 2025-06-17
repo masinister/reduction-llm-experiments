@@ -105,6 +105,8 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
 export TORCH_CPP_LOG_LEVEL=ERROR
+# Set master port for distributed training
+export MASTER_PORT=29501
 
 echo "Environment configured for FSDP fine-tuning."
 
