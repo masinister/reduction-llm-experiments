@@ -18,8 +18,11 @@ from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 import torch.distributed.fsdp as fsdp
-from torch.distributed.checkpoint.state_dict import get_state_dict, StateDictOptions
-
+from torch.distributed.checkpoint.state_dict import (
+    get_state_dict,
+    StateDictType,
+    StateDictConfig,
+)
 
 def print_memory_usage():
     if torch.cuda.is_available():
@@ -203,10 +206,11 @@ def main():
 
     if torch.cuda.device_count() > 1:
         print("Saving via FSDP get_state_dict...")
-        state_dict = get_state_dict(
-            trainer.model,
-            options=StateDictOptions(fully_sharded=True, cpu_offload=True)
+        config = StateDictConfig(
+            state_dict_type=StateDictType.FULL_STATE_DICT,
+            offload_to_cpu=True
         )
+        state_dict = get_state_dict(trainer.model, config)
         os.makedirs(final_dir, exist_ok=True)
         torch.save(state_dict, os.path.join(final_dir, "pytorch_model.bin"))
         trainer.model.config.save_pretrained(final_dir)
