@@ -164,7 +164,7 @@ def main():
     model = get_peft_model(model, peft_cfg)
     model.gradient_checkpointing_enable()
 
-    tokenized_ds, _ = load_and_prepare(args, tokenizer)
+    tokenized_ds = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     fsdp_cfg = None
