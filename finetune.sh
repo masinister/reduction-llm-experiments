@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #SBATCH --job-name=llama_finetune
 #SBATCH --output=logs/finetune_%j.out
 #SBATCH --error=logs/finetune_%j.err
@@ -14,8 +14,9 @@
 # Usage: ./finetune.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH]
 # All parameters are optional and have defaults
 
-# Enable strict error handling
+# Enable strict error handling + job control
 set -euxo pipefail
+set -m  # enable job control so children belong to our process group
 
 # Create logs directory
 mkdir -p logs
@@ -48,6 +49,9 @@ LEARNING_RATE=${6:-1e-4}
 EPOCHS=${7:-20}
 MAX_LENGTH=${8:-2048}
 
+# Set master port (can override via env)
+export MASTER_PORT=${MASTER_PORT:-29501}
+
 echo ""
 echo "Model name: $MODEL_NAME"
 echo "CSV path: $CSV_PATH"
@@ -57,7 +61,21 @@ echo "Gradient accumulation steps: $GRAD_ACCUM"
 echo "Learning rate: $LEARNING_RATE"
 echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
+echo "Master port: $MASTER_PORT"
 echo ""
+
+# Pre-cleanup: kill stale processes listening on MASTER_PORT
+if lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t >/dev/null; then
+  echo "⚠️  Port ${MASTER_PORT} in use; killing stale process(es)..."
+  lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t | xargs --no-run-if-empty kill -9 || true
+fi
+
+# Cleanup function to kill child processes on exit
+cleanup() {
+  echo "🧹 Cleaning up child processes..."
+  pkill -P $$ || true
+}
+trap cleanup EXIT
 
 # Check GPU status
 echo "GPU status:"
@@ -94,14 +112,12 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
 export TORCH_CPP_LOG_LEVEL=ERROR
-# Set master port for distributed training
-export MASTER_PORT=29501
 
 echo "Environment configured for FSDP fine-tuning."
 
 # Training command
 echo ""
-echo "Starting training..."
+echo "🚀 Starting training..."
 torchrun \
   --nproc_per_node=4 \
   --nnodes=1 \

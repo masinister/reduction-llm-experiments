@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #SBATCH --job-name=llama_full_pipeline
 #SBATCH --output=logs/run_%j.out
 #SBATCH --error=logs/run_%j.err
@@ -14,8 +14,9 @@
 # Usage: ./run.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [TEST_SET]
 # All parameters are optional and have defaults
 
-# Enable strict error handling
+# Enable strict error handling + job control
 set -euxo pipefail
+set -m  # enable job control so children belong to our process group
 
 # Create logs directory
 mkdir -p logs
@@ -50,7 +51,10 @@ MAX_LENGTH=${8:-2048}
 INFERENCE_OUTPUT=${9:-"./inference_results"}
 TEST_SET=${10:-"test"}
 
-echo ""
+# Set master port for distributed training (can override via env)
+export MASTER_PORT=${MASTER_PORT:-29501}
+
+echo "" 
 echo "==================== PIPELINE PARAMETERS ===================="
 echo "Model name: $MODEL_NAME"
 echo "CSV path: $CSV_PATH"
@@ -62,39 +66,24 @@ echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Test set: $TEST_SET"
+echo "Master port: $MASTER_PORT"
 echo "============================================================="
 echo ""
 
-# Check GPU status
-echo "GPU status:"
-nvidia-smi || { echo "nvidia-smi failed"; exit 1; }
-
-# Debug paths and environment
-echo "Python version: $(python --version)"
-echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-Not Set}"
-echo "Working directory: $(pwd)"
-echo "Files:"
-ls -lh
-
-# Validate required files
-if [[ ! -f "$CSV_PATH" ]]; then
-  echo "ERROR: CSV file not found at $CSV_PATH"
-  exit 1
+# Pre-cleanup: kill any stale processes listening on MASTER_PORT
+if lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t >/dev/null; then
+  echo "⚠️  Port ${MASTER_PORT} in use; killing stale process(es)..."
+  lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t | xargs --no-run-if-empty kill -9 || true
 fi
 
-if [[ ! -f "finetune.py" ]]; then
-  echo "ERROR: finetune.py not found in working directory"
-  exit 1
-fi
+# Cleanup function to kill child processes on exit
+cleanup() {
+  echo "🧹 Cleaning up child processes..."
+  pkill -P $$ || true
+}
+trap cleanup EXIT
 
-if [[ ! -f "inference.py" ]]; then
-  echo "ERROR: inference.py not found in working directory"
-  exit 1
-fi
-
-echo "All required files found."
-
-# Memory and compute environment optimizations
+# Environment optimizations
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
@@ -105,8 +94,6 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
 export TORCH_CPP_LOG_LEVEL=ERROR
-# Set master port for distributed training
-export MASTER_PORT=29501
 
 echo "Environment configured for FSDP fine-tuning."
 
@@ -197,46 +184,4 @@ elif [[ -d "$OUTPUT_DIR/final" ]]; then
     python inference.py \
         --model_path "$OUTPUT_DIR/final" \
         --csv_path "$CSV_PATH" \
-        --output_dir "$INFERENCE_OUTPUT" \
-        --test_set "$TEST_SET" \
-        --device "auto" \
-        --model_dtype "bfloat16" \
-        --max_new_tokens 512 \
-        --temperature 0.7 \
-        --do_sample \
-        --merge_adapters
-
-else
-    echo "ERROR: No trained model found in $OUTPUT_DIR"
-    echo "Expected to find either:"
-    echo "  - $OUTPUT_DIR/merged"
-    echo "  - $OUTPUT_DIR/final"
-    exit 1
-fi
-
-INFERENCE_END=$(date)
-echo ""
-echo "✅ Inference completed at: $INFERENCE_END"
-echo "Inference duration: $INFERENCE_START to $INFERENCE_END"
-
-# ========================================
-# FINAL SUMMARY
-# ========================================
-echo ""
-echo "🎉 FULL PIPELINE COMPLETED SUCCESSFULLY!"
-echo "=========================================="
-echo "Pipeline started:   $FINETUNE_START"
-echo "Fine-tuning ended:  $FINETUNE_END"
-echo "Inference ended:    $INFERENCE_END"
-echo ""
-echo "📁 Output Locations:"
-echo "  - Model directory:    $OUTPUT_DIR"
-echo "  - Final model:        $OUTPUT_DIR/final"
-echo "  - Inference results:  $INFERENCE_OUTPUT/inference_results_${TEST_SET}.json"
-echo ""
-echo "📊 To view results:"
-echo "  cat $INFERENCE_OUTPUT/inference_results_${TEST_SET}.json"
-echo ""
-echo "🔄 To run inference again on different test set:"
-echo "  ./inference.sh \"$MODEL_NAME\" \"$CSV_PATH\" \"$OUTPUT_DIR\" \"$INFERENCE_OUTPUT\" validation"
-echo "=========================================="
+        --output_dir \
