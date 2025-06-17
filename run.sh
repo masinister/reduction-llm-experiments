@@ -123,6 +123,7 @@ echo "Fine-tuning started at: $FINETUNE_START"
 torchrun \
   --nproc_per_node=4 \
   --nnodes=1 \
+  --master_port=$MASTER_PORT \
   finetune.py \
   --model_name "$MODEL_NAME" \
   --csv_path "$CSV_PATH" \
