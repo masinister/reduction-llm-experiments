@@ -193,6 +193,8 @@ def main():
     cpu_offload_config = CPUOffload(offload_params=True) if args.cpu_offload else None
 
     fsdp_cfg = {
+        "device_id":                     torch.cuda.current_device(),
+        "sync_module_states":            True,
         "sharding_strategy":             sharding_strategy_map[args.fsdp_sharding_strategy],
         "mixed_precision":               mp_policy,
         "cpu_offload":                   cpu_offload_config,
