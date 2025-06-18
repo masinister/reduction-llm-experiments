@@ -112,6 +112,11 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
 export TORCH_CPP_LOG_LEVEL=ERROR
 
+# NCCL timeout configurations to handle evaluation delays
+export NCCL_TIMEOUT=3600  # 1 hour timeout for NCCL operations
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600  # 1 hour heartbeat timeout
+export TORCH_NCCL_DESYNC_DEBUG=1  # Enable desync debugging
+
 echo "Environment configured for FSDP fine-tuning."
 
 # Training command

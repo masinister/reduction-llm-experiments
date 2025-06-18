@@ -39,6 +39,7 @@ def print_memory_usage():
 def evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args):
     """
     Evaluate the model on the test set and save outputs to JSON.
+    For distributed training, only rank 0 performs evaluation to avoid conflicts.
     
     Args:
         model: The trained model
@@ -50,6 +51,11 @@ def evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args):
     Returns:
         str: Path to the saved evaluation results JSON file
     """
+    # Only run evaluation on rank 0 to avoid race conditions
+    if dist.is_initialized() and dist.get_rank() != 0:
+        print(f"Rank {dist.get_rank()}: Skipping evaluation (rank 0 only)")
+        return None
+        
     print(f"Evaluating model on {len(test_indices)} test samples...")
     
     # Set model to eval mode
@@ -192,7 +198,11 @@ def main():
     
     if torch.cuda.device_count() > 1:
         if not dist.is_initialized():
-            dist.init_process_group(backend="nccl")
+            # Initialize with longer timeout to handle evaluation delays
+            dist.init_process_group(
+                backend="nccl", 
+                timeout=datetime.timedelta(seconds=3600)  # 1 hour timeout
+            )
         # Set the device for this process
         if "LOCAL_RANK" in os.environ:
             torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -308,8 +318,7 @@ def main():
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback()],
     )
-    
-    # Debug: Check gradient setup after trainer initialization
+      # Debug: Check gradient setup after trainer initialization
     if torch.cuda.device_count() > 1:
         print("Post-trainer initialization gradient check:")
         grad_params = 0
@@ -331,6 +340,11 @@ def main():
             trainer.train()
     else:
         trainer.train()
+    
+    # Ensure all training is complete before proceeding
+    if dist.is_initialized():
+        print(f"Rank {dist.get_rank()}: Training completed, synchronizing...")
+        dist.barrier()
         
     # ====================
     # 1) Save everything
@@ -341,9 +355,15 @@ def main():
         tokenizer.save_pretrained(args.output_dir)
         print("Final model saved to:", args.output_dir)
 
-        # ================================
-        # 2) Load an *unsharded* copy for eval
-        # ================================
+    # First barrier: ensure model saving is complete before evaluation
+    if dist.is_initialized():
+        print(f"Rank {dist.get_rank()}: Waiting for model saving to complete...")
+        dist.barrier()
+
+    # ================================
+    # 2) Load and evaluate (rank 0 only)
+    # ================================
+    if not dist.is_initialized() or dist.get_rank() == 0:
         print("Loading unsharded model for evaluation...")
         eval_model = AutoModelForCausalLM.from_pretrained(
             args.output_dir,
@@ -352,18 +372,30 @@ def main():
         ).to(torch.cuda.current_device())
         eval_tokenizer = AutoTokenizer.from_pretrained(args.output_dir)
 
-        # ===============================
-        # 3) Run evaluation on rank 0 only
-        # ===============================
         print("Evaluating model on held-out test set...")
         evaluate_on_test_set(eval_model, eval_tokenizer, raw_dataset, test_indices, args)
+        
+        # Clean up evaluation model to free memory
+        del eval_model
+        torch.cuda.empty_cache()
 
-    # only rank 0 does any of the above save + eval
-    # all ranks fall out here
+    # Final barrier: ensure all operations are complete
     if dist.is_initialized():
-        dist.barrier()
-
-    print_memory_usage()
+        print(f"Rank {dist.get_rank()}: Waiting for evaluation to complete...")
+        try:
+            dist.barrier()
+            print(f"Rank {dist.get_rank()}: All operations completed successfully!")
+        except Exception as e:
+            print(f"Rank {dist.get_rank()}: Warning - final barrier failed: {e}")
+            # Don't fail the job if final barrier times out    print_memory_usage()
+    
+    # Clean up distributed process group
+    if dist.is_initialized():
+        print(f"Rank {dist.get_rank()}: Cleaning up distributed process group...")
+        try:
+            dist.destroy_process_group()
+        except Exception as e:
+            print(f"Warning: Failed to cleanup process group: {e}")
 
 
 if __name__ == "__main__":

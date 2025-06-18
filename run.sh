@@ -40,15 +40,6 @@ echo "Node list:   $SLURM_NODELIST"
 echo "Submitted on: $(date)"
 echo "========================================================="
 
-# Load required modules
-echo "Loading required modules..."
-module load cuda/12.6.3/5fe76nu
-module load python/3.11.10
-
-# Activate virtual environment
-echo "Activating virtual environment..."
-source ~/venvs/reductions/bin/activate
-
 # Parameters from CLI or defaults
 MODEL_NAME=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
@@ -60,9 +51,6 @@ EPOCHS=${7:-20}
 MAX_LENGTH=${8:-2048}
 INFERENCE_OUTPUT=${9:-"./inference_results"}
 TEST_SET=${10:-"test"}
-
-# Set master port for distributed training (can override via env)
-export MASTER_PORT=${MASTER_PORT:-29501}
 
 echo "" 
 echo "==================== PIPELINE PARAMETERS ===================="
@@ -76,40 +64,8 @@ echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Test set: $TEST_SET"
-echo "Master port: $MASTER_PORT"
 echo "============================================================="
 echo ""
-
-# Pre-cleanup: kill any stale processes listening on MASTER_PORT
-if lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t >/dev/null; then
-  echo "⚠️  Port ${MASTER_PORT} in use; killing stale process(es)..."
-  lsof -iTCP:${MASTER_PORT} -sTCP:LISTEN -t | xargs --no-run-if-empty kill -9 || true
-fi
-
-# Cleanup function to kill child processes on exit
-cleanup() {
-  echo "🧹 Cleaning up child processes..."
-  pkill -P $$ || true
-}
-trap cleanup EXIT
-
-# Environment optimizations
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
-export CUDA_LAUNCH_BLOCKING=0
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export OMP_NUM_THREADS=8
-export TORCH_CUDA_ARCH_LIST="9.0"
-export TORCH_NCCL_BLOCKING_WAIT=1
-export NCCL_DEBUG=WARN
-export TORCH_CPP_LOG_LEVEL=ERROR
-
-# Required environment variables for FSDP + Q-LoRA (from fixed finetune.py)
-export ACCELERATE_USE_FSDP=1
-export FSDP_CPU_RAM_EFFICIENT_LOADING=1
-
-echo "Environment configured for FSDP fine-tuning."
 
 # ========================================
 # PHASE 1: FINE-TUNING
@@ -121,25 +77,9 @@ echo "========================================"
 FINETUNE_START=$(date)
 echo "Fine-tuning started at: $FINETUNE_START"
 
-torchrun \
-  --nproc_per_node=4 \
-  --nnodes=1 \
-  --master_port=$MASTER_PORT \
-  finetune.py \
-  --model_name "$MODEL_NAME" \
-  --csv_path "$CSV_PATH" \
-  --output_dir "$OUTPUT_DIR" \
-  --per_device_train_batch_size "$BATCH_SIZE" \
-  --per_device_eval_batch_size "$BATCH_SIZE" \
-  --gradient_accumulation_steps "$GRAD_ACCUM" \
-  --learning_rate "$LEARNING_RATE" \
-  --num_train_epochs "$EPOCHS" \
-  --lora_r 8 \
-  --lora_alpha 16 \
-  --lora_dropout 0.05 \
-  --max_length "$MAX_LENGTH" \
-  --model_dtype bfloat16 \
-  --cpu_offload
+# Run finetune.sh script
+echo "Calling finetune.sh with parameters..."
+./finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH"
 
 FINETUNE_END=$(date)
 echo ""
@@ -185,19 +125,9 @@ echo "Inference started at: $INFERENCE_START"
 # Create inference output directory
 mkdir -p "$INFERENCE_OUTPUT"
 
-# Run inference with the new simplified approach
-echo "Running inference with PEFT model from finetune.py output..."
-python inference.py \
-    --model_path "$OUTPUT_DIR" \
-    --base_model "$MODEL_NAME" \
-    --csv_path "$CSV_PATH" \
-    --output_dir "$INFERENCE_OUTPUT" \
-    --test_set "$TEST_SET" \
-    --device "auto" \
-    --model_dtype "bfloat16" \
-    --max_new_tokens 512 \
-    --temperature 0.7 \
-    --do_sample
+# Run inference.sh script
+echo "Calling inference.sh with parameters..."
+./inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$TEST_SET"
 
 INFERENCE_END=$(date)
 echo ""
@@ -220,4 +150,8 @@ echo "  - Model directory:     $OUTPUT_DIR"
 echo "  - Latest checkpoint:   $OUTPUT_DIR/checkpoint-*"
 echo "  - Held-out indices:    $OUTPUT_DIR/held_out_indices.json"
 echo "  - Inference results:   $INFERENCE_OUTPUT/inference_results_${TEST_SET}.json"
+echo ""
+echo "Scripts called:"
+echo "  - finetune.sh: Fine-tuning with distributed training"
+echo "  - inference.sh: Inference with PEFT model"
 echo "========================================"
