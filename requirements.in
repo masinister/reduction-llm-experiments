@@ -1,0 +1,17 @@
+torch[cuda126]
+torchvision[cuda126]
+
+# FSDP + QLoRA stack
+xformers
+transformers
+datasets
+peft
+accelerate
+huggingface_hub
+bitsandbytes
+trl
+
+# Helper utils
+evaluate
+pandas
+numpy
