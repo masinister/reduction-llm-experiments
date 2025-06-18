@@ -1,6 +1,6 @@
 # PyTorch + CUDA 12.6
 torch==2.7.0+cu126
-torchvision==0.15.0+cu126
+torchvision==0.22.0+cu126
 
 # xFormers for FSDP‑QLoRA
 xformers==0.0.30
