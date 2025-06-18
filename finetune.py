@@ -245,6 +245,26 @@ def main():
         modules_to_save=None,  # Don't save additional modules to avoid conflicts
     )
     model = get_peft_model(base_model, peft_cfg)
+      # For FSDP compatibility: ensure LoRA parameters are properly configured
+    if torch.cuda.device_count() > 1:
+        # Make sure all LoRA parameters require gradients
+        for name, param in model.named_parameters():
+            if 'lora_' in name:
+                param.requires_grad_(True)
+        
+        # Ensure the model is in training mode
+        model.train()
+        
+        # Print trainable parameters for debugging
+        trainable_params = []
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                trainable_params.append(name)
+        print(f"Trainable parameters: {len(trainable_params)}")
+        print(f"First few trainable params: {trainable_params[:5]}")
+    else:
+        # Single GPU - just ensure training mode
+        model.train()
     
     # Enable gradient checkpointing to save memory
     if hasattr(model, 'gradient_checkpointing_enable'):
@@ -275,13 +295,12 @@ def main():
         max_grad_norm=0.3,
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
-        tf32=True,
-        fsdp="full_shard auto_wrap" + (" offload" if args.cpu_offload else "") if torch.cuda.device_count() > 1 else "",
+        tf32=True,        # Use more conservative FSDP strategy for LoRA compatibility
+        fsdp="shard_grad_op" if torch.cuda.device_count() > 1 else "",
         fsdp_config={
-            "backward_prefetch": "backward_pre",
-            "forward_prefetch": "false", 
-            "use_orig_params": "true",  # Important for LoRA compatibility with FSDP
+            "use_orig_params": "true",  # Critical for LoRA
         } if torch.cuda.device_count() > 1 else {},
+        ddp_find_unused_parameters=False,  # Important for LoRA - don't look for unused params
     )
 
     trainer = Trainer(
@@ -292,6 +311,19 @@ def main():
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback()],
     )
+    
+    # Debug: Check gradient setup after trainer initialization
+    if torch.cuda.device_count() > 1:
+        print("Post-trainer initialization gradient check:")
+        grad_params = 0
+        total_params = 0
+        for name, param in trainer.model.named_parameters():
+            total_params += 1
+            if param.requires_grad:
+                grad_params += 1
+                if grad_params <= 3:  # Print first few
+                    print(f"  {name}: requires_grad={param.requires_grad}, dtype={param.dtype}")
+        print(f"  Total: {grad_params}/{total_params} parameters require gradients")
     
     if args.resume:
         try:
