@@ -1,7 +1,8 @@
-# specify CUDA build
-torch==2.7.0+cu124
-torchvision==0.15.0+cu124
+# CUDA-specific PyTorch
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
 
+# Core dependencies
 xformers>=0.0.31
 transformers>=4.40.0
 datasets>=2.18.0
@@ -10,6 +11,8 @@ accelerate>=0.29.0,<0.30.0
 huggingface_hub>=0.22.0
 bitsandbytes>=0.46.0
 trl>=0.8.6
+
+# Utilities
 evaluate>=0.4.1
 pandas>=1.5.0
 numpy>=1.24.0

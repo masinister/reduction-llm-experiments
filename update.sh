@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=update           # Job name
-#SBATCH --output=logs/finetune_%j.out       # Standard output and error log
-#SBATCH --error=logs/finetune_%j.err
-#SBATCH --partition=short                    # Partition (queue) name
-#SBATCH --nodes=1                           # Run on a single node
-#SBATCH --ntasks-per-node=1                 # Run a single task
-#SBATCH --cpus-per-task=10                  # Number of CPU cores per task
-#SBATCH --mem=10G                          # Total memory per node (increased for 70B model)
-#SBATCH --time=01:00:00                     # Time limit hrs:min:sec (1 day max for short)
+#SBATCH --job-name=update                 # Job name
+#SBATCH --output=logs/update_%j.out       # Standard output and error log
+#SBATCH --error=logs/update_%j.err
+#SBATCH --partition=short                 # Partition (queue) name
+#SBATCH --nodes=1                         # Run on a single node
+#SBATCH --ntasks-per-node=1               # Run a single task
+#SBATCH --cpus-per-task=10                # Number of CPU cores per task
+#SBATCH --mem=10G                         # Total memory per node (increased for 70B model)
+#SBATCH --time=01:00:00                   # Time limit hrs:min:sec (1 day max for short)
 
 
 # Load modules if necessary (e.g., python, cuda)
