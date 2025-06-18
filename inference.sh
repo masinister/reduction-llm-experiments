@@ -22,9 +22,6 @@
 # Enable strict error handling
 set -euxo pipefail
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
-
 # Print job details
 echo "===== Inference Job Started ====="
 echo "Job ID: $SLURM_JOB_ID"

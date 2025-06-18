@@ -16,10 +16,6 @@
 set -euxo pipefail
 set -m  # enable job control so children belong to our process group
 
-# Create logs directory
-mkdir -p logs
-echo "Logs directory created."
-
 # SLURM info
 echo "================ SLURM JOB INFO ================"
 echo "Job ID:      $SLURM_JOB_ID"
