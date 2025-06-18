@@ -36,94 +36,6 @@ def print_memory_usage():
     else:
         print("CUDA not available")
 
-def evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args):
-    """
-    Evaluate the model on the test set and save outputs to JSON.
-    For distributed training, only rank 0 performs evaluation to avoid conflicts.
-    
-    Args:
-        model: The trained model
-        tokenizer: The tokenizer
-        raw_dataset: The original dataset (before tokenization)
-        test_indices: List of test set indices
-        args: Training arguments containing output_dir and max_length
-    
-    Returns:
-        str: Path to the saved evaluation results JSON file
-    """
-    # Only run evaluation on rank 0 to avoid race conditions
-    if dist.is_initialized() and dist.get_rank() != 0:
-        print(f"Rank {dist.get_rank()}: Skipping evaluation (rank 0 only)")
-        return None
-        
-    print(f"Evaluating model on {len(test_indices)} test samples...")
-    
-    # Set model to eval mode
-    model.eval()
-    
-    results = []
-    
-    with torch.no_grad():
-        for idx in test_indices:
-            sample = raw_dataset[idx]
-            
-            # Create the same prompt format used during training
-            prompt = (
-                "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
-                f"### Input:\nSource: {sample['source_text']}\nTarget: {sample['target_text']}\n### Output:\n"
-            )
-            
-            # Tokenize the prompt
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
-            
-            # Move to the same device as the model
-            device = next(model.parameters()).device
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            
-            # Generate response
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=512,  # Allow for reasonable response length
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.9,
-                    pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-            
-            # Decode the generated text (removing the input prompt)
-            prompt_length = inputs['input_ids'].shape[1]
-            generated_tokens = outputs[0][prompt_length:]
-            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            
-            # Store the result
-            result = {
-                "sample_index": idx,
-                "source_text": sample["source_text"],
-                "target_text": sample["target_text"],
-                "ground_truth_reduction": sample["reduction_full_text"],
-                "generated_reduction": generated_text.strip(),
-                "prompt": prompt,
-            }
-            results.append(result)
-            
-            print(f"Processed sample {len(results)}/{len(test_indices)}")
-    
-    # Save results to JSON file
-    eval_results_path = os.path.join(args.output_dir, "test_set_evaluation.json")
-    with open(eval_results_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "evaluation_timestamp": datetime.datetime.now().isoformat(),
-            "model_name": args.model_name,
-            "test_set_size": len(test_indices),
-            "test_indices": test_indices,
-            "results": results
-        }, f, indent=2, ensure_ascii=False)
-    
-    print(f"Evaluation results saved to: {eval_results_path}")
-    return eval_results_path
-
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_name", type=str, required=True)
@@ -190,7 +102,7 @@ def load_and_prepare(args, tokenizer):
         return tok
 
     tokenized_splits = splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
-    return tokenized_splits, raw, test_idx
+    return tokenized_splits
 
 
 def main():
@@ -280,7 +192,7 @@ def main():
     print(f"Model has {model.num_parameters():,} total parameters")
     print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
-    tokenized_ds, raw_dataset, test_indices = load_and_prepare(args, tokenizer)
+    tokenized_ds = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     training_args = TrainingArguments(
@@ -345,8 +257,7 @@ def main():
     if dist.is_initialized():
         print(f"Rank {dist.get_rank()}: Training completed, synchronizing...")
         dist.barrier()
-        
-    # ====================
+          # ====================
     # 1) Save everything
     # ====================
     print("Saving final model...")
@@ -355,39 +266,17 @@ def main():
         tokenizer.save_pretrained(args.output_dir)
         print("Final model saved to:", args.output_dir)
 
-    # First barrier: ensure model saving is complete before evaluation
-    if dist.is_initialized():
-        print(f"Rank {dist.get_rank()}: Waiting for model saving to complete...")
-        dist.barrier()
-
-    # ================================
-    # 2) Load and evaluate (rank 0 only)
-    # ================================
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        print("Loading unsharded model for evaluation...")
-        eval_model = AutoModelForCausalLM.from_pretrained(
-            args.output_dir,
-            torch_dtype = dtype_map[args.model_dtype], 
-            trust_remote_code=True,
-        ).to(torch.cuda.current_device())
-        eval_tokenizer = AutoTokenizer.from_pretrained(args.output_dir)
-
-        print("Evaluating model on held-out test set...")
-        evaluate_on_test_set(eval_model, eval_tokenizer, raw_dataset, test_indices, args)
-        
-        # Clean up evaluation model to free memory
-        del eval_model
-        torch.cuda.empty_cache()
-
     # Final barrier: ensure all operations are complete
     if dist.is_initialized():
-        print(f"Rank {dist.get_rank()}: Waiting for evaluation to complete...")
+        print(f"Rank {dist.get_rank()}: Waiting for all ranks to complete...")
         try:
             dist.barrier()
             print(f"Rank {dist.get_rank()}: All operations completed successfully!")
         except Exception as e:
             print(f"Rank {dist.get_rank()}: Warning - final barrier failed: {e}")
-            # Don't fail the job if final barrier times out    print_memory_usage()
+            # Don't fail the job if final barrier times out
+
+    print_memory_usage()
     
     # Clean up distributed process group
     if dist.is_initialized():

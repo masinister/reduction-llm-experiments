@@ -33,10 +33,8 @@ def load_test_data(args):
     csv_path = os.path.expanduser(args.csv_path)
 
     if args.held_out_file is None:
-        model_dir = os.path.dirname(args.model_path.rstrip("/"))
-        if model_dir.endswith("final"):
-            model_dir = os.path.dirname(model_dir)
-        held_out_file = os.path.join(model_dir, "held_out_indices.json")
+        # The held_out_indices.json should be in the same directory as the model
+        held_out_file = os.path.join(args.model_path, "held_out_indices.json")
     else:
         held_out_file = os.path.expanduser(args.held_out_file)
 

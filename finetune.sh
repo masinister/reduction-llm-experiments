@@ -44,7 +44,7 @@ CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 OUTPUT_DIR=${3:-"./llama_finetune"}
 BATCH_SIZE=${4:-1}
 GRAD_ACCUM=${5:-16}
-LEARNING_RATE=${6:-1e-4}
+LEARNING_RATE=${6:-2e-4}
 EPOCHS=${7:-20}
 MAX_LENGTH=${8:-2048}
 
