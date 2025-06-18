@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=llama_finetune
-#SBATCH --output=logs/finetune_%j.out
-#SBATCH --error=logs/finetune_%j.err
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1

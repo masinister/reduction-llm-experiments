@@ -1,7 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=llama_inference
-#SBATCH --output=logs/inference_%j.out
-#SBATCH --error=logs/inference_%j.err
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
