@@ -256,15 +256,17 @@ def main():
     # Ensure all training is complete before proceeding
     if dist.is_initialized():
         print(f"Rank {dist.get_rank()}: Training completed, synchronizing...")
-        dist.barrier()
-          # ====================
+        dist.barrier()          
+    # ====================
     # 1) Save everything
     # ====================
-    print("Saving final model...")
     if not dist.is_initialized() or dist.get_rank() == 0:
+        print(f"Rank {dist.get_rank()}: Saving final model...")
         trainer.save_model(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-        print("Final model saved to:", args.output_dir)
+        print(f"Rank {dist.get_rank()}: Final model saved to:", args.output_dir)
+    else:
+        print(f"Rank {dist.get_rank()}: Waiting for rank 0 to save model...")
 
     # Final barrier: ensure all operations are complete
     if dist.is_initialized():
