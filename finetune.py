@@ -208,36 +208,50 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # Configure quantization for Q-LoRA
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
-        bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
-    )
+    # Configure quantization for Q-LoRA (only for single GPU to avoid FSDP conflicts)
+    use_quantization = torch.cuda.device_count() == 1
+    bnb_config = None
+    
+    if use_quantization:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
+            bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
+        )
+        print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
+    else:
+        print("Using full precision LoRA (multi-GPU FSDP mode - quantization disabled)")
 
-    # 1) Load the base model with proper FSDP-compatible settings
+    # Load the base model with FSDP-compatible settings
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
         device_map=None,
         trust_remote_code=True,
-        quantization_config=bnb_config if torch.cuda.device_count() > 1 else None,
+        quantization_config=bnb_config,  # Only use quantization for single GPU
         attn_implementation="sdpa",
     )
-    base_model.config.use_cache = False
-
-    # Apply LoRA directly to the base model - let TrainingArguments handle FSDP
+    base_model.config.use_cache = False    # Apply LoRA directly to the base model - let TrainingArguments handle FSDP
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        # Additional settings for better FSDP compatibility
+        modules_to_save=None,  # Don't save additional modules to avoid conflicts
     )
     model = get_peft_model(base_model, peft_cfg)
+    
+    # Enable gradient checkpointing to save memory
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+    
+    print(f"Model has {model.num_parameters():,} total parameters")
+    print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
     tokenized_ds, raw_dataset, test_indices = load_and_prepare(args, tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
@@ -262,12 +276,12 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        fsdp="full_shard auto_wrap" + (" offload" if args.cpu_offload else ""),
+        fsdp="full_shard auto_wrap" + (" offload" if args.cpu_offload else "") if torch.cuda.device_count() > 1 else "",
         fsdp_config={
             "backward_prefetch": "backward_pre",
             "forward_prefetch": "false", 
-            "use_orig_params": "false",
-        },
+            "use_orig_params": "true",  # Important for LoRA compatibility with FSDP
+        } if torch.cuda.device_count() > 1 else {},
     )
 
     trainer = Trainer(
