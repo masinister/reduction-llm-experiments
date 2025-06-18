@@ -335,11 +335,11 @@ def main():
     # ====================
     # 1) Save everything
     # ====================
-    print("Saving final checkpoint…")
+    print("Saving final model...")
     if not dist.is_initialized() or dist.get_rank() == 0:
-        trainer.save_state()
+        trainer.save_model(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-        print("Final checkpoint saved to:", args.output_dir)
+        print("Final model saved to:", args.output_dir)
 
         # ================================
         # 2) Load an *unsharded* copy for eval
