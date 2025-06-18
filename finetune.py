@@ -332,35 +332,40 @@ def main():
     else:
         trainer.train()
         
-    # Evaluate model on test set after saving
-    print("Evaluating model on held-out test set...")
-    evaluate_on_test_set(model, tokenizer, raw_dataset, test_indices, args)
-        
-    print_memory_usage()
-
+    # ====================
+    # 1) Save everything
+    # ====================
     print("Saving final checkpoint…")
-    # Only rank 0 writes disk
     if not dist.is_initialized() or dist.get_rank() == 0:
-        # If model is wrapped in FSDP, use the new get_state_dict API:
-        fsdp_root = model
-        # unwrap HF’s Trainer + PEFT wrappers to get the actual FSDP module
-        if hasattr(model, 'unwrap_model'):
-            fsdp_root = model.unwrap_model(model)
-
-        if hasattr(fsdp_root, "get_state_dict"):
-            # New PyTorch 2.6+ API
-            state = fsdp_root.get_state_dict()
-            save_path = os.path.join(args.output_dir, "pytorch_model.bin")
-            print(f"→ Saving FSDP state_dict with get_state_dict() to {save_path}")
-            torch.save(state, save_path)
-        else:
-            # Fallback to old API
-            print("→ Falling back to Trainer.save_state() with the old API")
-            trainer.save_state()
-
-        # Always save tokenizer
+        trainer.save_state()
         tokenizer.save_pretrained(args.output_dir)
-        print("Final tokenizer and model saved to:", args.output_dir)
+        print("Final checkpoint saved to:", args.output_dir)
+
+        # ================================
+        # 2) Load an *unsharded* copy for eval
+        # ================================
+        print("Loading unsharded model for evaluation...")
+        # this will load the checkpoint you just wrote,
+        # including all LoRA adapters merged into the base weights
+        eval_model = AutoModelForCausalLM.from_pretrained(
+            args.output_dir,
+            torch_dtype = dtype_map[args.model_dtype], 
+            trust_remote_code=True,
+        ).to(torch.cuda.current_device())
+        eval_tokenizer = AutoTokenizer.from_pretrained(args.output_dir)
+
+        # ===============================
+        # 3) Run evaluation on rank 0 only
+        # ===============================
+        print("Evaluating model on held-out test set...")
+        evaluate_on_test_set(eval_model, eval_tokenizer, raw_dataset, test_indices, args)
+
+    # only rank 0 does any of the above save + eval
+    # all ranks fall out here
+    if dist.is_initialized():
+        dist.barrier()
+
+    print_memory_usage()
 
 
 if __name__ == "__main__":
