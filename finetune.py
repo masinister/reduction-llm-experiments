@@ -266,10 +266,6 @@ def main():
         # Single GPU - just ensure training mode
         model.train()
     
-    # Enable gradient checkpointing to save memory
-    if hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-    
     print(f"Model has {model.num_parameters():,} total parameters")
     print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
