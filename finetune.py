@@ -6,6 +6,7 @@ import random
 
 import torch
 import torch.distributed as dist
+from torch.distributed import checkpoint
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -337,11 +338,30 @@ def main():
         
     print_memory_usage()
 
-    print("Saving final checkpoint...")
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        trainer.save_state()
+    print("Saving final checkpoint…")
+    # Only rank 0 writes disk
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        # If model is wrapped in FSDP, use the new get_state_dict API:
+        fsdp_root = model
+        # unwrap HF’s Trainer + PEFT wrappers to get the actual FSDP module
+        if hasattr(model, 'unwrap_model'):
+            fsdp_root = model.unwrap_model(model)
+
+        if hasattr(fsdp_root, "get_state_dict"):
+            # New PyTorch 2.6+ API
+            state = fsdp_root.get_state_dict()
+            save_path = os.path.join(args.output_dir, "pytorch_model.bin")
+            print(f"→ Saving FSDP state_dict with get_state_dict() to {save_path}")
+            torch.save(state, save_path)
+        else:
+            # Fallback to old API
+            print("→ Falling back to Trainer.save_state() with the old API")
+            trainer.save_state()
+
+        # Always save tokenizer
         tokenizer.save_pretrained(args.output_dir)
-        print("Final checkpoint saved to:", args.output_dir)
+        print("Final tokenizer and model saved to:", args.output_dir)
+
 
 if __name__ == "__main__":
     main()
