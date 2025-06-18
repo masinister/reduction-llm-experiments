@@ -1,9 +1,11 @@
-# CUDA-specific PyTorch
-torch==2.6.0+cu124
-torchvision==0.21.0+cu124
+# PyTorch + CUDA 12.6
+torch==2.7.0+cu126
+torchvision==0.15.0+cu126
 
-# Core dependencies
-xformers>=0.0.31
+# xFormers for FSDP‑QLoRA
+xformers==0.0.30
+
+# Core HF/QLoRA libraries
 transformers>=4.40.0
 datasets>=2.18.0
 peft>=0.10.0
@@ -12,7 +14,6 @@ huggingface_hub>=0.22.0
 bitsandbytes>=0.46.0
 trl>=0.8.6
 
-# Utilities
 evaluate>=0.4.1
 pandas>=1.5.0
 numpy>=1.24.0

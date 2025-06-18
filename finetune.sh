@@ -31,9 +31,8 @@ echo "================================================"
 
 # Load required modules
 echo "Loading required modules..."
+module load cuda/12.6.3/5fe76nu
 module load python/3.11.10
-module load cuda/12.4.0/3mdaov5
-module load libaio/0.3.113/xtilfep
 
 # Activate virtual environment
 echo "Activating virtual environment..."

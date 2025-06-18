@@ -34,8 +34,8 @@ echo "Date: $(date)"
 echo "================================="
 
 # Load modules
+module load cuda/12.6.3/5fe76nu
 module load python/3.11.10
-module load cuda/12.4.0/3mdaov5
 source ~/venvs/reductions/bin/activate
 
 # Parameters from CLI or defaults

@@ -11,20 +11,16 @@
 
 
 # Load modules if necessary (e.g., python, cuda)
-echo "Loading Python module..."
-module load python/3.11.10 || { echo "Failed to load Python module"; exit 1; }
-
-echo "Loading CUDA module..."
-module load cuda/12.4.0/3mdaov5 || { echo "Failed to load CUDA module"; exit 1; }
-
+module load cuda/12.6.3/5fe76nu
+module load python/3.11.10
 
 python3 -m venv ~/venvs/reductions
 
 echo "Activating virtual environment..."
-source ~/venvs/reductions/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
+source ~/venvs/reductions/bin/activate
 
 pip install --upgrade pip
 
 pip install -r requirements.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu124 \
-  --find-links https://download.pytorch.org/whl/cu124/torch_stable.html
+  --extra-index-url https://download.pytorch.org/whl/cu126 \
+  --find-links https://download.pytorch.org/whl/cu126/torch_stable.html
