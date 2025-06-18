@@ -1,8 +1,8 @@
-torch[cuda126]
-torchvision[cuda126]
+torch==2.7.1+cu126
+torchvision==0.22.1+cu126
 
 # FSDP + QLoRA stack
-xformers
+xformers>=0.0.30
 transformers
 datasets
 peft
