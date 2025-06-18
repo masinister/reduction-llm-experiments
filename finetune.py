@@ -235,7 +235,7 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["all-linear"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
     )
     model = get_peft_model(base_model, peft_cfg)
 
