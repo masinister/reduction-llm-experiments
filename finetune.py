@@ -345,8 +345,6 @@ def main():
         # 2) Load an *unsharded* copy for eval
         # ================================
         print("Loading unsharded model for evaluation...")
-        # this will load the checkpoint you just wrote,
-        # including all LoRA adapters merged into the base weights
         eval_model = AutoModelForCausalLM.from_pretrained(
             args.output_dir,
             torch_dtype = dtype_map[args.model_dtype], 
