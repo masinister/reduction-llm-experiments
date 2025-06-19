@@ -51,6 +51,7 @@ echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 echo "🔍 Submitting inference job (depends on fine-tuning)..."
 INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$TEST_SET" "$MAX_LENGTH")
 echo "Inference job ID: $INFERENCE_JOB_ID"
+echo "  -> Dependency: afterok:$FINETUNE_JOB_ID (will run only if fine-tuning succeeds)"
 
 echo ""
 echo "🎉 Pipeline jobs submitted successfully!"
