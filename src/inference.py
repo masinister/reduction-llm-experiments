@@ -60,35 +60,23 @@ def load_model_and_tokenizer(args):
     print(f"Loading model from {args.model_path}")
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     model_dtype = dtype_map[args.model_dtype]
-    
-    # Check if we have a trainer checkpoint (trainer_state.json indicates this is from finetune.py)
-    trainer_state_path = os.path.join(args.model_path, "trainer_state.json")
-    
-    if not os.path.exists(trainer_state_path):
-        raise ValueError(f"No trainer_state.json found in {args.model_path}. "
-                         "This script is designed to work with models saved by finetune.py")
-    
-    if not args.base_model:
-        raise ValueError("--base_model argument is required when loading from trainer checkpoints")
-    
-    print("📁 Loading model from finetune.py output")
-    
-    # Load tokenizer from the checkpoint directory
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-    
-    print(f"Loading base model: {args.base_model}")
-    
+
     # Find the latest checkpoint subdirectory
     checkpoint_dirs = [d for d in os.listdir(args.model_path) if d.startswith("checkpoint-")]
     if not checkpoint_dirs:
         raise FileNotFoundError(f"No checkpoint directories found in {args.model_path}")
-    
+
     # Use the latest checkpoint
     latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.split("-")[1]))
     checkpoint_path = os.path.join(args.model_path, latest_checkpoint)
     print(f"Loading from latest checkpoint: {checkpoint_path}")
-    
+
+    # Load tokenizer from the checkpoint directory
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+
+    print(f"Loading base model: {args.base_model}")
+
     # Load base model first
     base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
@@ -96,7 +84,7 @@ def load_model_and_tokenizer(args):
         device_map="auto" if args.device == "auto" else None,
         trust_remote_code=True,
     )
-    
+
     # Load PEFT adapters on top of base model
     model = PeftModel.from_pretrained(
         base_model,
@@ -105,7 +93,7 @@ def load_model_and_tokenizer(args):
         device_map="auto" if args.device == "auto" else None,
     )
     print("✅ Loaded PEFT model from checkpoint")
-    
+
     # Merge adapters if requested
     if args.merge_adapters:
         print("Merging LoRA adapters into base model...")
