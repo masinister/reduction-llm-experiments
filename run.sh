@@ -16,7 +16,7 @@ PIPELINE_JOB_ID=$(sbatch --parsable \
     --job-name=llama_pipeline \
     --output="${LOG_DIR}/pipeline_%j.out" \
     --error="${LOG_DIR}/pipeline_%j.err" \
-    submit_pipeline.sh "$@")
+    scripts/submit_pipeline.sh "$@")
 
 echo "Pipeline job ID: $PIPELINE_JOB_ID"
 echo ""

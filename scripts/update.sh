@@ -29,13 +29,13 @@ pip install pip-tools
 
 # 6) Run pip-compile to generate fully pinned requirements.txt
 pip-compile requirements.in \
-  --output-file=requirements.txt \
+  --output-file=../requirements.txt \
   --upgrade \
   --extra-index-url https://download.pytorch.org/whl/cu126 \
   --find-links https://download.pytorch.org/whl/cu126/torch_stable.html
 
 # 7) Install from the newly generated requirements.txt
-pip install -r requirements.txt \
+pip install -r ../requirements.txt \
   --extra-index-url https://download.pytorch.org/whl/cu126 \
   --find-links https://download.pytorch.org/whl/cu126/torch_stable.html
 

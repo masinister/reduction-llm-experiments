@@ -87,8 +87,8 @@ if [[ ! -f "$CSV_PATH" ]]; then
   exit 1
 fi
 
-if [[ ! -f "finetune.py" ]]; then
-  echo "ERROR: finetune.py not found in working directory"
+if [[ ! -f "src/finetune.py" ]]; then
+  echo "ERROR: src/finetune.py not found in working directory"
   exit 1
 fi
 
@@ -120,7 +120,7 @@ torchrun \
   --nproc_per_node=4 \
   --nnodes=1 \
   --master_port=$MASTER_PORT \
-  finetune.py \
+  src/finetune.py \
   --model_name "$MODEL_NAME" \
   --csv_path "$CSV_PATH" \
   --output_dir "$OUTPUT_DIR" \
@@ -145,4 +145,4 @@ echo "  - Latest checkpoint: $OUTPUT_DIR/checkpoint-*"
 echo "  - Held-out indices: $OUTPUT_DIR/held_out_indices.json"
 echo "=================================================="
 echo "To run inference:"
-echo "  ./inference.sh \"$MODEL_NAME\" \"$CSV_PATH\" \"$OUTPUT_DIR\" ./inference_results test"
+echo "  ./scripts/inference.sh \"$MODEL_NAME\" \"$CSV_PATH\" \"$OUTPUT_DIR\" ./inference_results test"

@@ -46,11 +46,11 @@ echo "============================================================="
 
 # Submit jobs with dependencies
 echo "🚀 Submitting fine-tuning job..."
-FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH")
+FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" scripts/finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH")
 echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 
 echo "🔍 Submitting inference job (depends on fine-tuning)..."
-INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$TEST_SET" "$MAX_LENGTH")
+INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$TEST_SET" "$MAX_LENGTH")
 echo "Inference job ID: $INFERENCE_JOB_ID"
 
 echo ""

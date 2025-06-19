@@ -76,7 +76,7 @@ echo "Found trainer state file - confirmed finetune.py output."
 
 # Run inference with the new simplified approach
 echo "Running inference with PEFT model from finetune.py output..."
-python inference.py \
+python src/inference.py \
     --model_path "$MODEL_PATH" \
     --base_model "$BASE_MODEL" \
     --csv_path "$CSV_PATH" \
