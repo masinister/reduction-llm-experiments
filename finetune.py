@@ -6,7 +6,6 @@ import random
 
 import torch
 import torch.distributed as dist
-from torch.distributed import checkpoint
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -256,17 +255,13 @@ def main():
     # Ensure all training is complete before proceeding
     if dist.is_initialized():
         print(f"Rank {dist.get_rank()}: Training completed, synchronizing...")
-        dist.barrier()          
-    # ====================
-    # 1) Save everything
-    # ====================
+        dist.barrier()
+        
+    # Save tokenizer to the main output directory for inference compatibility
     if not dist.is_initialized() or dist.get_rank() == 0:
-        print(f"Rank {dist.get_rank()}: Saving final model...")
-        trainer.save_model(args.output_dir)
+        print(f"Saving tokenizer to main output directory for inference compatibility...")
         tokenizer.save_pretrained(args.output_dir)
-        print(f"Rank {dist.get_rank()}: Final model saved to:", args.output_dir)
-    else:
-        print(f"Rank {dist.get_rank()}: Waiting for rank 0 to save model...")
+        print(f"Tokenizer saved to: {args.output_dir}")
 
     # Final barrier: ensure all operations are complete
     if dist.is_initialized():
