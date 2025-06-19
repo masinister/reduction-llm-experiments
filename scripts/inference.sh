@@ -68,24 +68,35 @@ echo "Found held-out indices file."
 # Check if trainer_state.json exists (indicates finetune.py output)
 TRAINER_STATE_FILE="$MODEL_PATH/trainer_state.json"
 if [[ ! -f "$TRAINER_STATE_FILE" ]]; then
-    echo "ERROR: trainer_state.json not found at $TRAINER_STATE_FILE"
-    echo "This script requires models trained with finetune.py"
-    echo ""
-    echo "Debugging information:"
-    echo "Contents of $MODEL_PATH:"
-    ls -la "$MODEL_PATH" 2>/dev/null || echo "Directory $MODEL_PATH does not exist"
-    echo ""
-    echo "Looking for checkpoint directories:"
-    find "$MODEL_PATH" -name "checkpoint-*" -type d 2>/dev/null || echo "No checkpoint directories found"
-    echo ""
-    echo "This usually means:"
-    echo "1. Fine-tuning job hasn't completed yet"
-    echo "2. Fine-tuning job failed"
-    echo "3. Output directory path mismatch"
-    echo ""
-    exit 1
+    # Find the latest (largest) checkpoint directory
+    LATEST_CKPT=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "checkpoint-*" | sort -V | tail -n 1)
+    if [[ -z "$LATEST_CKPT" ]]; then
+        echo "ERROR: No checkpoint directories found in $MODEL_PATH."
+        exit 1
+    fi
+    TRAINER_STATE_FILE="$LATEST_CKPT/trainer_state.json"
+    if [[ ! -f "$TRAINER_STATE_FILE" ]]; then
+        echo "ERROR: trainer_state.json not found in latest checkpoint directory: $LATEST_CKPT."
+        echo "This script requires models trained with finetune.py"
+        echo ""
+        echo "Debugging information:"
+        echo "Contents of $MODEL_PATH:"
+        ls -la "$MODEL_PATH" 2>/dev/null || echo "Directory $MODEL_PATH does not exist"
+        echo ""
+        echo "Looking for checkpoint directories:"
+        find "$MODEL_PATH" -name "checkpoint-*" -type d 2>/dev/null || echo "No checkpoint directories found"
+        echo ""
+        echo "This usually means:"
+        echo "1. Fine-tuning job hasn't completed yet"
+        echo "2. Fine-tuning job failed"
+        echo "3. Output directory path mismatch"
+        echo ""
+        exit 1
+    fi
+    echo "Found trainer state file in latest checkpoint directory: $TRAINER_STATE_FILE - confirmed finetune.py output."
+else
+    echo "Found trainer state file - confirmed finetune.py output."
 fi
-echo "Found trainer state file - confirmed finetune.py output."
 
 # Run inference with the new simplified approach
 echo "Running inference with PEFT model from finetune.py output..."
