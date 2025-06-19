@@ -19,7 +19,6 @@ from transformers import (
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 
-# Memory logging callback remains unchanged
 class MemoryLoggerCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
         torch.cuda.empty_cache()
@@ -152,10 +151,11 @@ def main():
         torch_dtype=dtype_map[args.model_dtype],
         device_map=None,
         trust_remote_code=True,
-        quantization_config=bnb_config,  # Only use quantization for single GPU
+        quantization_config=bnb_config,
         attn_implementation="sdpa",
     )
-    base_model.config.use_cache = False    # Apply LoRA directly to the base model - let TrainingArguments handle FSDP
+    base_model.config.use_cache = False
+
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -163,11 +163,10 @@ def main():
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        # Additional settings for better FSDP compatibility
-        modules_to_save=None,  # Don't save additional modules to avoid conflicts
+        modules_to_save=None,
     )
     model = get_peft_model(base_model, peft_cfg)
-      # For FSDP compatibility: ensure LoRA parameters are properly configured
+    
     if torch.cuda.device_count() > 1:
         # Make sure all LoRA parameters require gradients
         for name, param in model.named_parameters():
@@ -213,12 +212,12 @@ def main():
         max_grad_norm=0.3,
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
-        tf32=True,        # Use more conservative FSDP strategy for LoRA compatibility
-        fsdp="shard_grad_op" if torch.cuda.device_count() > 1 else "",
+        tf32=True,
+        fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
         fsdp_config={
-            "use_orig_params": "true",  # Critical for LoRA
+            "use_orig_params": "true",
         } if torch.cuda.device_count() > 1 else {},
-        ddp_find_unused_parameters=False,  # Important for LoRA - don't look for unused params
+        ddp_find_unused_parameters=False,
     )
 
     trainer = Trainer(
@@ -229,7 +228,7 @@ def main():
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback()],
     )
-      # Debug: Check gradient setup after trainer initialization
+    # Debug: Check gradient setup after trainer initialization
     if torch.cuda.device_count() > 1:
         print("Post-trainer initialization gradient check:")
         grad_params = 0
@@ -252,36 +251,19 @@ def main():
     else:
         trainer.train()
     
-    # Ensure all training is complete before proceeding
-    if dist.is_initialized():
-        print(f"Rank {dist.get_rank()}: Training completed, synchronizing...")
-        dist.barrier()
-        
-    # Save tokenizer to the main output directory for inference compatibility
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        print(f"Saving tokenizer to main output directory for inference compatibility...")
-        tokenizer.save_pretrained(args.output_dir)
-        print(f"Tokenizer saved to: {args.output_dir}")
-
     # Final barrier: ensure all operations are complete
     if dist.is_initialized():
         print(f"Rank {dist.get_rank()}: Waiting for all ranks to complete...")
         try:
             dist.barrier()
             print(f"Rank {dist.get_rank()}: All operations completed successfully!")
+            print(f"Rank {dist.get_rank()}: Cleaning up distributed process group...")
+            try:
+                dist.destroy_process_group()
+            except Exception as e:
+                print(f"Warning: Failed to cleanup process group: {e}")
         except Exception as e:
             print(f"Rank {dist.get_rank()}: Warning - final barrier failed: {e}")
-            # Don't fail the job if final barrier times out
-
-    print_memory_usage()
-    
-    # Clean up distributed process group
-    if dist.is_initialized():
-        print(f"Rank {dist.get_rank()}: Cleaning up distributed process group...")
-        try:
-            dist.destroy_process_group()
-        except Exception as e:
-            print(f"Warning: Failed to cleanup process group: {e}")
 
 
 if __name__ == "__main__":
