@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Usage: ./submit_pipeline.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [TEST_SET]
-# All parameters are optional and have defaults
+# Usage: ./submit_pipeline.sh LOG_DIR [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [TEST_SET]
+# LOG_DIR is required, other parameters are optional and have defaults
 
-# Create logs directory with timestamp
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_DIR="logs/run_${TIMESTAMP}"
-mkdir -p "$LOG_DIR"
+# Get the log directory from the first parameter
+LOG_DIR="$1"
+shift  # Remove LOG_DIR from $@ so the rest of the parameters shift down
 
 # If running as SLURM job, set up logging
 if [ ! -z "$SLURM_JOB_ID" ]; then
