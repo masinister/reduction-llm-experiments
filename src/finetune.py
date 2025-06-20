@@ -20,10 +20,32 @@ from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 
 class MemoryLoggerCallback(TrainerCallback):
+    def __init__(self):
+        super().__init__()
+
     def on_epoch_end(self, args, state, control, **kwargs):
         torch.cuda.empty_cache()
         peak = torch.cuda.max_memory_allocated() / 1024**3
         print(f"Peak GPU mem this epoch: {peak:.2f} GB")
+
+
+class AverageTrainLossCallback(TrainerCallback):
+    def __init__(self):
+        super().__init__()
+        self.epoch_train_losses = []
+        self.current_epoch_losses = []
+
+    def on_step_end(self, args, state, control, **kwargs):
+        logs = kwargs.get('logs', {})
+        if 'loss' in logs:
+            self.current_epoch_losses.append(logs['loss'])
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if self.current_epoch_losses:
+            avg_loss = sum(self.current_epoch_losses) / len(self.current_epoch_losses)
+            self.epoch_train_losses.append(avg_loss)
+            print(f"Average training loss this epoch: {avg_loss:.4f}")
+            self.current_epoch_losses = []
 
 
 def print_memory_usage():
@@ -226,7 +248,7 @@ def main():
         train_dataset=tokenized_ds["train"],
         eval_dataset=tokenized_ds["validation"],
         data_collator=data_collator,
-        callbacks=[MemoryLoggerCallback()],
+        callbacks=[MemoryLoggerCallback(), AverageTrainLossCallback()],
     )
     # Debug: Check gradient setup after trainer initialization
     if torch.cuda.device_count() > 1:
