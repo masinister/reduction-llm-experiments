@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument("--csv_path", type=str, required=True)
     parser.add_argument("--held_out_file", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="./inference_results")
-    parser.add_argument("--test_set", type=str, default="test", choices=["test", "validation", "both"])
+    parser.add_argument("--test_set", type=str, default="both", choices=["test", "validation", "both"])
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--max_new_tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.7)

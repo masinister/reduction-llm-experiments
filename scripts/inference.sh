@@ -12,7 +12,7 @@
 # Usage: ./inference.sh [BASE_MODEL] [CSV_PATH] [MODEL_PATH] [INFERENCE_OUTPUT] [TEST_SET] [MAX_LENGTH]
 # All parameters are optional and have defaults
 # 
-# BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.1-8B-Instruct)
+# BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.3-70B-Instruct)
 # CSV_PATH: Path to the CSV dataset file
 # MODEL_PATH: Path to the output directory from finetune.py (contains trainer_state.json and checkpoints)
 # INFERENCE_OUTPUT: Directory to save inference results
@@ -35,11 +35,11 @@ module load python/3.11.10
 source ~/venvs/reductions/bin/activate
 
 # Parameters from CLI or defaults
-BASE_MODEL=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
+BASE_MODEL=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 MODEL_PATH=${3:-"./llama_finetune"}
 INFERENCE_OUTPUT=${4:-"./inference_results"}
-TEST_SET=${5:-"test"}
+TEST_SET=${5:-"both"}
 MAX_LENGTH=${6:-2048}
 
 echo ""
