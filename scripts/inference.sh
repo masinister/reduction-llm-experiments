@@ -9,14 +9,13 @@
 #SBATCH --mem=256G
 #SBATCH --time=2:00:00
 
-# Usage: ./inference.sh [BASE_MODEL] [CSV_PATH] [MODEL_PATH] [INFERENCE_OUTPUT] [TEST_SET] [MAX_LENGTH]
+# Usage: ./inference.sh [BASE_MODEL] [CSV_PATH] [MODEL_PATH] [INFERENCE_OUTPUT] [MAX_LENGTH]
 # All parameters are optional and have defaults
 # 
 # BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.3-70B-Instruct)
 # CSV_PATH: Path to the CSV dataset file
 # MODEL_PATH: Path to the output directory from finetune.py (contains trainer_state.json and checkpoints)
 # INFERENCE_OUTPUT: Directory to save inference results
-# TEST_SET: Which set to run inference on (test, validation, or both)
 # MAX_LENGTH: Maximum sequence length for tokenization (should match finetune.py value)
 
 # Enable strict error handling
@@ -39,15 +38,13 @@ BASE_MODEL=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
 CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
 MODEL_PATH=${3:-"./llama_finetune"}
 INFERENCE_OUTPUT=${4:-"./inference_results"}
-TEST_SET=${5:-"both"}
-MAX_LENGTH=${6:-2048}
+MAX_LENGTH=${5:-2048}
 
 echo ""
 echo "Base model: $BASE_MODEL"
 echo "CSV path: $CSV_PATH"
 echo "Model path (finetune.py output): $MODEL_PATH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
-echo "Test set: $TEST_SET"
 echo "Max length: $MAX_LENGTH"
 echo ""
 
@@ -105,7 +102,6 @@ python src/inference.py \
     --base_model "$BASE_MODEL" \
     --csv_path "$CSV_PATH" \
     --output_dir "$INFERENCE_OUTPUT" \
-    --test_set "$TEST_SET" \
     --device "auto" \
     --model_dtype "bfloat16" \
     --max_length "$MAX_LENGTH" \
@@ -115,4 +111,4 @@ python src/inference.py \
 
 echo ""
 echo "✅ Inference completed at $(date)"
-echo "Results saved to: $INFERENCE_OUTPUT/inference_results_${TEST_SET}.csv"
+echo "Results saved to: $INFERENCE_OUTPUT/inference_results.csv"

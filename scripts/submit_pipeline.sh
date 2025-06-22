@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: ./submit_pipeline.sh LOG_DIR [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [TEST_SET]
+# Usage: ./submit_pipeline.sh LOG_DIR [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [JUDGE_MODEL] [EVAL_OUTPUT]
 # LOG_DIR is required, other parameters are optional and have defaults
 
 # Get the log directory from the first parameter
@@ -28,7 +28,8 @@ LEARNING_RATE=${6:-1e-4}
 EPOCHS=${7:-30}
 MAX_LENGTH=${8:-2048}
 INFERENCE_OUTPUT=${9:-"./inference_results"}
-TEST_SET=${10:-"both"}
+JUDGE_MODEL=${10:-"meta-llama/Llama-3.3-70B-Instruct"}
+EVAL_OUTPUT=${11:-"./evaluation_results"}
 
 echo "==================== PIPELINE PARAMETERS ===================="
 echo "Model name: $MODEL_NAME"
@@ -40,7 +41,8 @@ echo "Learning rate: $LEARNING_RATE"
 echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
-echo "Test set: $TEST_SET"
+echo "Judge model: $JUDGE_MODEL"
+echo "Evaluation output dir: $EVAL_OUTPUT"
 echo "============================================================="
 
 # Submit jobs with dependencies
@@ -49,15 +51,21 @@ FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --erro
 echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 
 echo "🔍 Submitting inference job (depends on fine-tuning)..."
-INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$TEST_SET" "$MAX_LENGTH")
+INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$MAX_LENGTH")
 echo "Inference job ID: $INFERENCE_JOB_ID"
 echo "  -> Dependency: afterok:$FINETUNE_JOB_ID (will run only if fine-tuning succeeds)"
+
+echo "📊 Submitting evaluation job for both sets (depends on inference)..."
+EVAL_JOB_ID=$(sbatch --parsable --dependency=afterok:$INFERENCE_JOB_ID --output="${LOG_DIR}/evaluate_%j.out" --error="${LOG_DIR}/evaluate_%j.err" scripts/evaluate.sh "$INFERENCE_OUTPUT" "$JUDGE_MODEL" "$EVAL_OUTPUT" 4096)
+echo "Evaluation job ID: $EVAL_JOB_ID"
+echo "  -> Dependency: afterok:$INFERENCE_JOB_ID (will run only if inference succeeds)"
 
 echo ""
 echo "🎉 Pipeline jobs submitted successfully!"
 echo "========================================"
 echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 echo "Inference job ID:   $INFERENCE_JOB_ID"
+echo "Evaluation job ID:  $EVAL_JOB_ID"
 echo ""
 echo "📁 Log directory created: $LOG_DIR"
 echo ""
@@ -65,13 +73,15 @@ echo "Monitor progress with:"
 echo "  squeue -u \$USER"
 echo "  tail -f ${LOG_DIR}/finetune_${FINETUNE_JOB_ID}.out"
 echo "  tail -f ${LOG_DIR}/inference_${INFERENCE_JOB_ID}.out"
+echo "  tail -f ${LOG_DIR}/evaluate_${EVAL_JOB_ID}.out"
 if [ ! -z "$SLURM_JOB_ID" ]; then
     echo "  tail -f ${LOG_DIR}/pipeline_${SLURM_JOB_ID}.out"
 fi
 echo ""
 echo "Expected outputs:"
 echo "  - Model directory:     $OUTPUT_DIR"
-echo "  - Inference results:   $INFERENCE_OUTPUT/inference_results_${TEST_SET}.json"
+echo "  - Inference results:   $INFERENCE_OUTPUT/inference_results.csv"
+echo "  - Evaluation results:  $EVAL_OUTPUT/evaluation_inference_results.csv"
 echo "  - Pipeline logs:       $LOG_DIR/"
 echo "========================================"
 

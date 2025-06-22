@@ -17,7 +17,6 @@ def parse_args():
     parser.add_argument("--csv_path", type=str, required=True)
     parser.add_argument("--held_out_file", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="./inference_results")
-    parser.add_argument("--test_set", type=str, default="both", choices=["test", "validation", "both"])
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--max_new_tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.7)
@@ -107,12 +106,12 @@ def load_model_and_tokenizer(args):
 
 
 
-def run_inference(model, tokenizer, dataset, args):
+def run_inference(model, tokenizer, dataset, dataset_name, args):
     results = []
     device = next(model.parameters()).device
 
     for i, example in enumerate(dataset):
-        print(f"Example {i+1}/{len(dataset)}")
+        print(f"{dataset_name} example {i+1}/{len(dataset)}")
 
         prompt = (
             "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
@@ -138,6 +137,7 @@ def run_inference(model, tokenizer, dataset, args):
             generated_reduction = f"ERROR: {str(e)}"
 
         results.append({
+            "dataset": dataset_name,
             "index": i,
             "source_text": example["source_text"],
             "target_text": example["target_text"],
@@ -149,17 +149,26 @@ def run_inference(model, tokenizer, dataset, args):
     return results
 
 
-def save_results(results, output_dir, dataset_name):
+def save_results(results, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"inference_results_{dataset_name}.csv")
+    output_file = os.path.join(output_dir, "inference_results.csv")
 
     # Convert results to DataFrame and save as CSV
     df = pd.DataFrame(results)
     df.to_csv(output_file, index=False, encoding='utf-8')
 
     print(f"\nSaved results to {output_file}")
-    print(f"{sum(1 for r in results if not r['generated_reduction'].startswith('ERROR:'))} succeeded")
-    print(f"{sum(1 for r in results if r['generated_reduction'].startswith('ERROR:'))} failed")
+    
+    # Print summary by dataset
+    for dataset_name in df['dataset'].unique():
+        dataset_results = df[df['dataset'] == dataset_name]
+        succeeded = len(dataset_results[~dataset_results['generated_reduction'].str.startswith('ERROR:', na=False)])
+        failed = len(dataset_results[dataset_results['generated_reduction'].str.startswith('ERROR:', na=False)])
+        print(f"{dataset_name}: {succeeded} succeeded, {failed} failed")
+    
+    total_succeeded = len(df[~df['generated_reduction'].str.startswith('ERROR:', na=False)])
+    total_failed = len(df[df['generated_reduction'].str.startswith('ERROR:', na=False)])
+    print(f"Total: {total_succeeded} succeeded, {total_failed} failed")
 
     return output_file
 
@@ -177,26 +186,24 @@ def main():
     print(f"Device: {args.device}")
     print(f"Dtype: {args.model_dtype}")
     print("="*50)
-
+    
     model, tokenizer = load_model_and_tokenizer(args)
     test_data, val_data, held_out_info = load_test_data(args)
 
-    datasets_to_run = {}
-    if args.test_set in ("test", "both"):
-        datasets_to_run["test"] = test_data
-    if args.test_set in ("validation", "both"):
-        datasets_to_run["validation"] = val_data
+    # Always run inference on both test and validation sets
+    print("\nRunning inference on test set...")
+    test_results = run_inference(model, tokenizer, test_data, "test", args)
+    
+    print("\nRunning inference on validation set...")
+    val_results = run_inference(model, tokenizer, val_data, "validation", args)
+    
+    # Combine all results
+    all_results = test_results + val_results
+    
+    # Save combined results to single file
+    output_file = save_results(all_results, args.output_dir)
 
-    output_files = []
-    for name, data in datasets_to_run.items():
-        print(f"\nRunning inference on {name} set")
-        results = run_inference(model, tokenizer, data, args)
-        output_file = save_results(results, args.output_dir, name)
-        output_files.append(output_file)
-
-    print("\nDone. Output files:")
-    for f in output_files:
-        print(f"- {f}")
+    print(f"\nDone. Output file: {output_file}")
 
 
 if __name__ == "__main__":

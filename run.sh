@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SLURM submission wrapper for the pipeline
-# Usage: ./run.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [TEST_SET]
+# Usage: ./run.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [JUDGE_MODEL] [EVAL_OUTPUT]
 
 # Create logs directory with timestamp
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -19,6 +19,11 @@ PIPELINE_JOB_ID=$(sbatch --parsable \
     scripts/submit_pipeline.sh "$LOG_DIR" "$@")
 
 echo "Pipeline job ID: $PIPELINE_JOB_ID"
+echo ""
+echo "Pipeline Components:"
+echo "  1. 🔬 Fine-tuning: Trains model on reduction dataset"
+echo "  2. 🔍 Inference: Generates reductions on both test and validation sets"
+echo "  3. 📊 Evaluation: LLM-as-a-judge evaluates generated reductions for both sets"
 echo ""
 echo "Monitor progress with:"
 echo "  squeue -u \$USER"
