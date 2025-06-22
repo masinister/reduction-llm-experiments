@@ -115,4 +115,4 @@ python src/inference.py \
 
 echo ""
 echo "✅ Inference completed at $(date)"
-echo "Results saved to: $INFERENCE_OUTPUT/inference_results_${TEST_SET}.json"
+echo "Results saved to: $INFERENCE_OUTPUT/inference_results_${TEST_SET}.csv"

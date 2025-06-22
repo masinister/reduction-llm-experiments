@@ -2,6 +2,7 @@ import os
 import argparse
 import torch
 import json
+import pandas as pd
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, BitsAndBytesConfig
 from peft import PeftModel, get_peft_model, LoraConfig, TaskType
@@ -150,10 +151,11 @@ def run_inference(model, tokenizer, dataset, args):
 
 def save_results(results, output_dir, dataset_name):
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"inference_results_{dataset_name}.json")
+    output_file = os.path.join(output_dir, f"inference_results_{dataset_name}.csv")
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    # Convert results to DataFrame and save as CSV
+    df = pd.DataFrame(results)
+    df.to_csv(output_file, index=False, encoding='utf-8')
 
     print(f"\nSaved results to {output_file}")
     print(f"{sum(1 for r in results if not r['generated_reduction'].startswith('ERROR:'))} succeeded")
