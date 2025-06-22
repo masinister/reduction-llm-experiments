@@ -28,7 +28,7 @@ LEARNING_RATE=${6:-2e-4}
 EPOCHS=${7:-20}
 MAX_LENGTH=${8:-2048}
 INFERENCE_OUTPUT=${9:-"./inference_results"}
-TEST_SET=${10:-"test"}
+TEST_SET=${10:-"both"}
 
 echo "==================== PIPELINE PARAMETERS ===================="
 echo "Model name: $MODEL_NAME"
