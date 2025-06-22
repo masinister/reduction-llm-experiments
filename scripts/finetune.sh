@@ -129,7 +129,7 @@ torchrun \
   --gradient_accumulation_steps "$GRAD_ACCUM" \
   --learning_rate "$LEARNING_RATE" \
   --num_train_epochs "$EPOCHS" \
-  --lora_r 8 \
+  --lora_r 16 \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
   --max_length "$MAX_LENGTH" \
