@@ -113,10 +113,31 @@ def run_inference(model, tokenizer, dataset, dataset_name, args):
     for i, example in enumerate(dataset):
         print(f"{dataset_name} example {i+1}/{len(dataset)}")
 
-        prompt = (
-            "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
-            f"### Input:\nSource: {example['source_text']}\nTarget: {example['target_text']}\n### Output:\n"
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": "Write a natural-language LaTeX reduction given source and target."
+            },
+            {
+                "role": "user", 
+                "content": f"Source: {example['source_text']}\nTarget: {example['target_text']}"
+            }
+        ]
+        
+        try:
+            prompt = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+        except Exception as e:
+            # Fallback to manual formatting if tokenizer doesn't support chat templates
+            print(f"Warning: Chat template not supported, falling back to manual formatting: {e}")
+            prompt = (
+                f"System: {messages[0]['content']}\n"
+                f"User: {messages[1]['content']}\n"
+                f"Assistant: "
+            )
 
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
         inputs = {k: v.to(device) for k, v in inputs.items()}

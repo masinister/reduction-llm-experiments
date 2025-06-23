@@ -112,12 +112,40 @@ def load_and_prepare(args, tokenizer):
     })
 
     def tokenize_fn(ex):
-        prompt = (
-            "### Instruction:\nWrite a natural-language LaTeX reduction given source and target.\n"
-            f"### Input:\nSource: {ex['source_text']}\nTarget: {ex['target_text']}\n### Output:\n"
-        )
-        full = prompt + ex["reduction_full_text"]
-        tok = tokenizer(full, truncation=True, max_length=args.max_length)
+        # Construct chat format messages
+        messages = [
+            {
+                "role": "system",
+                "content": "Write a natural-language LaTeX reduction given source and target."
+            },
+            {
+                "role": "user", 
+                "content": f"Source: {ex['source_text']}\nTarget: {ex['target_text']}"
+            },
+            {
+                "role": "assistant",
+                "content": ex["reduction_full_text"]
+            }
+        ]
+        
+        # Use chat template to format the conversation
+        try:
+            formatted_text = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+        except Exception as e:
+            # Fallback to manual formatting if tokenizer doesn't support chat templates
+            print(f"Warning: Chat template not supported, falling back to manual formatting: {e}")
+            formatted_text = (
+                f"System: {messages[0]['content']}\n"
+                f"User: {messages[1]['content']}\n"
+                f"Assistant: {messages[2]['content']}"
+            )
+        
+        # Tokenize the formatted text
+        tok = tokenizer(formatted_text, truncation=True, max_length=args.max_length)
         tok["labels"] = tok["input_ids"].copy()
         return tok
 
