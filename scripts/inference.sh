@@ -107,7 +107,8 @@ python src/inference.py \
     --max_length "$MAX_LENGTH" \
     --max_new_tokens 2048 \
     --temperature 0.7 \
-    --do_sample
+    --do_sample \
+    --merge_adapters
 
 echo ""
 echo "✅ Inference completed at $(date)"
