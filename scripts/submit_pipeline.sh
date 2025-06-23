@@ -39,6 +39,9 @@ echo "Gradient accumulation steps: $GRAD_ACCUM"
 echo "Learning rate: $LEARNING_RATE"
 echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
+echo "LoRA rank: $LORA_R"
+echo "LoRA alpha: $LORA_ALPHA"
+echo "LoRA dropout: $LORA_DROPOUT"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Judge model: $JUDGE_MODEL"
 echo "Evaluation output dir: $EVAL_OUTPUT"
@@ -46,7 +49,7 @@ echo "============================================================="
 
 # Submit jobs with dependencies
 echo "🚀 Submitting fine-tuning job..."
-FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" scripts/finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH")
+FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" scripts/finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH" "$LORA_R" "$LORA_ALPHA" "$LORA_DROPOUT")
 echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 
 echo "🔍 Submitting inference job (depends on fine-tuning)..."

@@ -9,7 +9,7 @@
 #SBATCH --mem=400G
 #SBATCH --time=24:00:00
 
-# Usage: ./finetune.sh MODEL_NAME CSV_PATH OUTPUT_DIR BATCH_SIZE GRAD_ACCUM LEARNING_RATE EPOCHS MAX_LENGTH
+# Usage: ./finetune.sh MODEL_NAME CSV_PATH OUTPUT_DIR BATCH_SIZE GRAD_ACCUM LEARNING_RATE EPOCHS MAX_LENGTH LORA_R LORA_ALPHA LORA_DROPOUT
 # All parameters are required
 
 # Enable strict error handling + job control
@@ -41,6 +41,9 @@ GRAD_ACCUM=${5}
 LEARNING_RATE=${6}
 EPOCHS=${7}
 MAX_LENGTH=${8}
+LORA_R=${9}
+LORA_ALPHA=${10}
+LORA_DROPOUT=${11}
 
 # Set master port (can override via env)
 export MASTER_PORT=${MASTER_PORT:-29501}
@@ -54,6 +57,9 @@ echo "Gradient accumulation steps: $GRAD_ACCUM"
 echo "Learning rate: $LEARNING_RATE"
 echo "Number of epochs: $EPOCHS"
 echo "Max sequence length: $MAX_LENGTH"
+echo "LoRA rank: $LORA_R"
+echo "LoRA alpha: $LORA_ALPHA"
+echo "LoRA dropout: $LORA_DROPOUT"
 echo "Master port: $MASTER_PORT"
 echo ""
 
@@ -128,10 +134,9 @@ torchrun \
   --per_device_eval_batch_size "$BATCH_SIZE" \
   --gradient_accumulation_steps "$GRAD_ACCUM" \
   --learning_rate "$LEARNING_RATE" \
-  --num_train_epochs "$EPOCHS" \
-  --lora_r 16 \
-  --lora_alpha 16 \
-  --lora_dropout 0.05 \
+  --num_train_epochs "$EPOCHS" \  --lora_r "$LORA_R" \
+  --lora_alpha "$LORA_ALPHA" \
+  --lora_dropout "$LORA_DROPOUT" \
   --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
   --cpu_offload
