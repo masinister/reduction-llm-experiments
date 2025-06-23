@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=H200
 #SBATCH --mem=256G
-#SBATCH --time=2:00:00
+#SBATCH --time=12:00:00
 
 # Usage: ./inference.sh BASE_MODEL CSV_PATH MODEL_PATH INFERENCE_OUTPUT MAX_LENGTH
 # All parameters are required
