@@ -1,11 +1,20 @@
 #!/bin/bash
 
-# Usage: ./submit_pipeline.sh LOG_DIR [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH] [INFERENCE_OUTPUT] [JUDGE_MODEL] [EVAL_OUTPUT]
-# LOG_DIR is required, other parameters are optional and have defaults
+# Usage: ./submit_pipeline.sh LOG_DIR [CONFIG_FILE]
+# LOG_DIR is required, CONFIG_FILE is optional and defaults to ../config.sh
 
 # Get the log directory from the first parameter
 LOG_DIR="$1"
-shift  # Remove LOG_DIR from $@ so the rest of the parameters shift down
+CONFIG_FILE=${2:-"../config.sh"}
+
+# Load configuration
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "❌ Error: Config file '$CONFIG_FILE' not found!"
+    exit 1
+fi
+
+echo "📋 Loading configuration from: $CONFIG_FILE"
+source "$CONFIG_FILE"
 
 # If running as SLURM job, set up logging
 if [ ! -z "$SLURM_JOB_ID" ]; then
@@ -18,18 +27,8 @@ if [ ! -z "$SLURM_JOB_ID" ]; then
     echo "================================="
 fi
 
-# Parameters from CLI or defaults
-MODEL_NAME=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
-CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
-OUTPUT_DIR=${3:-"./llama_finetune"}
-BATCH_SIZE=${4:-1}
-GRAD_ACCUM=${5:-16}
-LEARNING_RATE=${6:-1e-4}
-EPOCHS=${7:-30}
-MAX_LENGTH=${8:-2048}
-INFERENCE_OUTPUT=${9:-"./inference_results"}
-JUDGE_MODEL=${10:-"meta-llama/Llama-3.3-70B-Instruct"}
-EVAL_OUTPUT=${11:-"./evaluation_results"}
+# Parameters from config file (with path expansion for CSV_PATH)
+CSV_PATH=$(eval echo "$CSV_PATH")
 
 echo "==================== PIPELINE PARAMETERS ===================="
 echo "Model name: $MODEL_NAME"
@@ -56,7 +55,7 @@ echo "Inference job ID: $INFERENCE_JOB_ID"
 echo "  -> Dependency: afterok:$FINETUNE_JOB_ID (will run only if fine-tuning succeeds)"
 
 echo "📊 Submitting evaluation job for both sets (depends on inference)..."
-EVAL_JOB_ID=$(sbatch --parsable --dependency=afterok:$INFERENCE_JOB_ID --output="${LOG_DIR}/evaluate_%j.out" --error="${LOG_DIR}/evaluate_%j.err" scripts/evaluate.sh "$INFERENCE_OUTPUT" "$JUDGE_MODEL" "$EVAL_OUTPUT" 4096)
+EVAL_JOB_ID=$(sbatch --parsable --dependency=afterok:$INFERENCE_JOB_ID --output="${LOG_DIR}/evaluate_%j.out" --error="${LOG_DIR}/evaluate_%j.err" scripts/evaluate.sh "$INFERENCE_OUTPUT" "$JUDGE_MODEL" "$EVAL_OUTPUT" "$EVAL_MAX_LENGTH")
 echo "Evaluation job ID: $EVAL_JOB_ID"
 echo "  -> Dependency: afterok:$INFERENCE_JOB_ID (will run only if inference succeeds)"
 
