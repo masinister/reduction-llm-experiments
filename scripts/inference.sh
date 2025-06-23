@@ -9,8 +9,8 @@
 #SBATCH --mem=256G
 #SBATCH --time=2:00:00
 
-# Usage: ./inference.sh [BASE_MODEL] [CSV_PATH] [MODEL_PATH] [INFERENCE_OUTPUT] [MAX_LENGTH]
-# All parameters are optional and have defaults
+# Usage: ./inference.sh BASE_MODEL CSV_PATH MODEL_PATH INFERENCE_OUTPUT MAX_LENGTH
+# All parameters are required
 # 
 # BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.3-70B-Instruct)
 # CSV_PATH: Path to the CSV dataset file
@@ -33,12 +33,12 @@ module load cuda/12.6.3/5fe76nu
 module load python/3.11.10
 source ~/venvs/reductions/bin/activate
 
-# Parameters from CLI or defaults
-BASE_MODEL=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
-CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
-MODEL_PATH=${3:-"./llama_finetune"}
-INFERENCE_OUTPUT=${4:-"./inference_results"}
-MAX_LENGTH=${5:-2048}
+# Parameters from CLI (required)
+BASE_MODEL=${1}
+CSV_PATH=$(eval echo ${2})
+MODEL_PATH=${3}
+INFERENCE_OUTPUT=${4}
+MAX_LENGTH=${5}
 
 echo ""
 echo "Base model: $BASE_MODEL"

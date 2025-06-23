@@ -9,8 +9,8 @@
 #SBATCH --mem=400G
 #SBATCH --time=24:00:00
 
-# Usage: ./finetune.sh [MODEL_NAME] [CSV_PATH] [OUTPUT_DIR] [BATCH_SIZE] [GRAD_ACCUM] [LEARNING_RATE] [EPOCHS] [MAX_LENGTH]
-# All parameters are optional and have defaults
+# Usage: ./finetune.sh MODEL_NAME CSV_PATH OUTPUT_DIR BATCH_SIZE GRAD_ACCUM LEARNING_RATE EPOCHS MAX_LENGTH
+# All parameters are required
 
 # Enable strict error handling + job control
 set -euxo pipefail
@@ -32,15 +32,15 @@ module load python/3.11.10
 echo "Activating virtual environment..."
 source ~/venvs/reductions/bin/activate
 
-# Parameters from CLI or defaults
-MODEL_NAME=${1:-"meta-llama/Llama-3.3-70B-Instruct"}
-CSV_PATH=$(eval echo ${2:-"~/data/karp.csv"})
-OUTPUT_DIR=${3:-"./llama_finetune"}
-BATCH_SIZE=${4:-1}
-GRAD_ACCUM=${5:-16}
-LEARNING_RATE=${6:-2e-4}
-EPOCHS=${7:-20}
-MAX_LENGTH=${8:-2048}
+# Parameters from CLI (required)
+MODEL_NAME=${1}
+CSV_PATH=$(eval echo ${2})
+OUTPUT_DIR=${3}
+BATCH_SIZE=${4}
+GRAD_ACCUM=${5}
+LEARNING_RATE=${6}
+EPOCHS=${7}
+MAX_LENGTH=${8}
 
 # Set master port (can override via env)
 export MASTER_PORT=${MASTER_PORT:-29501}

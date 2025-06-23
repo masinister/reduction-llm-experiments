@@ -9,8 +9,8 @@
 #SBATCH --mem=256G
 #SBATCH --time=3:00:00
 
-# Usage: ./evaluate.sh [INFERENCE_DIR] [JUDGE_MODEL] [OUTPUT_DIR] [MAX_LENGTH]
-# All parameters are optional and have defaults
+# Usage: ./evaluate.sh INFERENCE_DIR JUDGE_MODEL OUTPUT_DIR MAX_LENGTH
+# All parameters are required
 # 
 # INFERENCE_DIR: Directory containing inference results CSV files (inference_results_test.csv and inference_results_validation.csv)
 # JUDGE_MODEL: Model to use as judge (e.g., meta-llama/Llama-3.3-70B-Instruct)
@@ -32,11 +32,11 @@ module load cuda/12.6.3/5fe76nu
 module load python/3.11.10
 source ~/venvs/reductions/bin/activate
 
-# Parameters from CLI or defaults
-INFERENCE_DIR=${1:-"./inference_results"}
-JUDGE_MODEL=${2:-"meta-llama/Llama-3.3-70B-Instruct"}
-OUTPUT_DIR=${3:-"./evaluation_results"}
-MAX_LENGTH=${4:-4096}
+# Parameters from CLI (required)
+INFERENCE_DIR=${1}
+JUDGE_MODEL=${2}
+OUTPUT_DIR=${3}
+MAX_LENGTH=${4}
 
 # Define the expected inference result file
 INFERENCE_RESULTS="$INFERENCE_DIR/inference_results.csv"

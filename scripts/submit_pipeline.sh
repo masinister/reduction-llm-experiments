@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Usage: ./submit_pipeline.sh LOG_DIR [CONFIG_FILE]
-# LOG_DIR is required, CONFIG_FILE is optional and defaults to ../config.sh
+# Usage: ./submit_pipeline.sh LOG_DIR CONFIG_FILE
+# Both LOG_DIR and CONFIG_FILE are required
 
 # Get the log directory from the first parameter
 LOG_DIR="$1"
-CONFIG_FILE=${2:-"../config.sh"}
+CONFIG_FILE="$2"
 
 # Load configuration
 if [ ! -f "$CONFIG_FILE" ]; then
