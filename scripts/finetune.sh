@@ -134,7 +134,8 @@ torchrun \
   --per_device_eval_batch_size "$BATCH_SIZE" \
   --gradient_accumulation_steps "$GRAD_ACCUM" \
   --learning_rate "$LEARNING_RATE" \
-  --num_train_epochs "$EPOCHS" \  --lora_r "$LORA_R" \
+  --num_train_epochs "$EPOCHS" \
+  --lora_r "$LORA_R" \
   --lora_alpha "$LORA_ALPHA" \
   --lora_dropout "$LORA_DROPOUT" \
   --max_length "$MAX_LENGTH" \
