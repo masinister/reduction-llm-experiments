@@ -65,23 +65,15 @@ def create_evaluation_prompt(source_text: str, target_text: str,
 
 Please evaluate the generated reduction on the following criteria:
 
-1. **Correctness**: Does the reduction correctly transform instances of the source problem to the target problem?
-2. **Completeness**: Does the reduction cover all necessary steps and transformations?
-3. **Clarity**: Is the reduction clearly explained and easy to follow?
-
-For each criterion, provide a score from 1-5 (5 being best) and brief justification.
+1. **Similarity**: Does the reduction match the structure and intent of the ground truth reduction?
+2. **Correctness**: Does the reduction correctly transform instances of the source problem to the target problem?
 
 Then provide an overall assessment:
 - **ACCEPT**: The generated reduction is substantially correct and complete
 - **PARTIAL**: The generated reduction has the right idea but missing key details or has minor errors
 - **REJECT**: The generated reduction is fundamentally incorrect or incomplete
 
-Format your response as follows:
-**CORRECTNESS**: [Score 1-5] - [Brief justification]
-**COMPLETENESS**: [Score 1-5] - [Brief justification]  
-**CLARITY**: [Score 1-5] - [Brief justification]
-**OVERALL**: [ACCEPT/PARTIAL/REJECT] - [Brief overall assessment]
-**CONFIDENCE**: [Score 1-5] - [How confident are you in this evaluation]"""
+"""
 
     return prompt
 
