@@ -65,8 +65,8 @@ python src/generate_cot.py \
     --input_csv "$INPUT_CSV" \
     --output_csv "$OUTPUT_CSV" \
     --cot_model "$COT_MODEL" \
-    --max_length "$MAX_LENGTH" \
-    --temperature 0.7 \
+    --max_new_tokens "$MAX_LENGTH" \
+    --temperature 0.6 \
     --device auto \
     --model_dtype bfloat16 \
     --batch_size 1 \
