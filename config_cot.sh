@@ -8,7 +8,7 @@ MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
 JUDGE_MODEL="nvidia/Llama-3_3-Nemotron-Super-49B-v1"
 
 # Data paths - Point to CoT-enhanced dataset
-CSV_PATH="~/data/karp_cot.csv"  # Generated using run_cot_generation.sh
+CSV_PATH="./data/karp_cot.csv"  # Generated using run_cot_generation.sh
 
 # Output directories with CoT suffix for clarity
 OUTPUT_DIR="./llama_finetune_cot"
