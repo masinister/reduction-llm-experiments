@@ -54,36 +54,44 @@ def load_cot_model(args):
     return model, tokenizer
 
 
-def create_cot_messages(source_text: str, target_text: str, reduction_text: str, thinking: str = "on") -> list:
-    """Create chat messages for generating chain-of-thought reasoning"""
+def create_cot_messages(source_text: str,
+                        target_text: str,
+                        reduction_text: str,
+                        thinking: str = "on",
+                        num_steps: int = 5) -> list:
+    """Produce a synthetic “chain of thought” leading to a known reduction."""
     
-    system_message = f"""detailed thinking {thinking}
+    system_message = """detailed thinking {thinking}
 
-You are an expert in computational complexity theory and mathematical reductions. Your task is to generate a detailed chain-of-thought reasoning that explains the step-by-step process of creating reductions between computational problems."""
+You are a complexity-theory expert.  Your goal is **not** to solve the reduction from scratch, but to **invent** a realistic-sounding internal reasoning trace that an expert *could* have gone through, step by step, to arrive at the given reduction.  
+- Each step should be a *brief* thought (1-2 sentences).  
+- Do **not** restate the final reduction.
+"""
     
-    user_message = f"""I need you to analyze the following reduction between two computational problems and explain the reasoning behind it.
+    user_message = f"""
+**Source problem:**  
+{source_text}
 
-**Source Problem**: {source_text}
-**Target Problem**: {target_text}
+**Target problem:**  
+{target_text}
 
-**Reduction**: {reduction_text}
+**Known reduction (for your reference):**  
+{reduction_text}
 
-Please explain the reasoning in 3 concise (1-2 sentence) chain-of-thought steps. Format your response as follows:
+**Instructions:**  
+Please generate exactly {num_steps} synthetic CoT steps that an expert might have used to discover this reduction. Format your response as a bulleted list. For example:
 
-1. **Problem understanding**
-    - [Describe the key characteristics of the source problem and target problem.]
-2. **Reduction strategy**
-    - [Provide a high-level overview of how you would approach the reduction.]
-3. **Correctness**
-    - [(=>) Why are solutions to the source problem transformed into solutions to the target problem?]
-    - [(<=) Why do solutions to the target problem correspond to solutions to the source problem?]"""
-
-    messages = [
-        {"role": "system", "content": system_message},
-        {"role": "user", "content": user_message}
+- First, notice that...
+- This suggests that...
+- Hence, the reduction can be constructed by...
+- Indeed, ...
+"""
+    
+    return [
+        {"role": "system", "content": system_message.strip()},
+        {"role": "user",   "content": user_message.strip()}
     ]
-    
-    return messages
+
 
 
 def generate_single_cot(model, tokenizer, example: Dict, args) -> str:
@@ -119,6 +127,10 @@ def generate_single_cot(model, tokenizer, example: Dict, args) -> str:
         
         response = tokenizer.decode(output[0], skip_special_tokens=True)
         cot_reasoning = response[len(prompt):].strip()
+        
+        # Parse output by taking everything AFTER the </think> tag
+        if "</think>" in cot_reasoning:
+            cot_reasoning = cot_reasoning.split("</think>", 1)[1].strip()
         
         return cot_reasoning
         
