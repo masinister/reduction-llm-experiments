@@ -23,6 +23,7 @@ def parse_args():
                         choices=["float16", "bfloat16", "float32"])
     parser.add_argument("--batch_size", type=int, default=1,
                         help="Batch size for evaluation (keep low for large models)")
+    parser.add_argument("--cot", action="store_true", help="Evaluate chain-of-thought formatted results")
     return parser.parse_args()
 
 
@@ -51,10 +52,33 @@ def load_judge_model(args):
 
 
 def create_evaluation_prompt(source_text: str, target_text: str, 
-                           ground_truth_reduction: str, generated_reduction: str) -> str:
+                           ground_truth_reduction: str, generated_reduction: str, cot_mode: bool = False) -> str:
     """Create a prompt for the judge model to evaluate the generated reduction"""
     
-    prompt = f"""You are an expert in computational complexity theory and mathematical reductions. Your task is to evaluate whether a generated reduction between two computational problems is correct and complete.
+    if cot_mode:
+        evaluation_instruction = """You are an expert in computational complexity theory and mathematical reductions. Your task is to evaluate whether a generated chain-of-thought reasoning and reduction between two computational problems is correct and complete.
+
+**Source Problem**: {source_text}
+**Target Problem**: {target_text}
+
+**Ground Truth Reduction**: {ground_truth_reduction}
+
+**Generated Chain-of-Thought and Reduction**: {generated_reduction}
+
+Please evaluate the generated response on the following criteria:
+
+1. **Reasoning Quality**: Does the chain-of-thought reasoning demonstrate sound logical steps?
+2. **Similarity**: Does the final reduction match the structure and intent of the ground truth reduction?
+3. **Correctness**: Does the reduction correctly transform instances of the source problem to the target problem?
+
+Then provide an overall assessment:
+- **ACCEPT**: The generated reasoning and reduction are substantially correct and complete
+- **PARTIAL**: The generated response has the right idea but missing key details or has minor errors
+- **REJECT**: The generated reasoning or reduction is fundamentally incorrect or incomplete
+
+"""
+    else:
+        evaluation_instruction = """You are an expert in computational complexity theory and mathematical reductions. Your task is to evaluate whether a generated reduction between two computational problems is correct and complete.
 
 **Source Problem**: {source_text}
 **Target Problem**: {target_text}
@@ -75,7 +99,12 @@ Then provide an overall assessment:
 
 """
 
-    return prompt
+    return evaluation_instruction.format(
+        source_text=source_text,
+        target_text=target_text,
+        ground_truth_reduction=ground_truth_reduction,
+        generated_reduction=generated_reduction
+    )
 
 
 
@@ -90,11 +119,15 @@ def evaluate_single_example(model, tokenizer, example: Dict, args) -> Dict:
             'evaluation': 'ERROR: Generation failed',
         }
     
+    # Check if this is CoT mode (either from args flag or from the data itself)
+    cot_mode = args.cot or example.get('cot_mode', False)
+    
     prompt = create_evaluation_prompt(
         example['source_text'],
         example['target_text'], 
         example['ground_truth_reduction'],
-        example['generated_reduction']
+        example['generated_reduction'],
+        cot_mode=cot_mode
     )
     
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
@@ -115,10 +148,10 @@ def evaluate_single_example(model, tokenizer, example: Dict, args) -> Dict:
         response = tokenizer.decode(output[0], skip_special_tokens=True)
         response = response[len(prompt):].strip()
         
-        return {'evaluation': response}
+        return {'evaluation': response, 'cot_evaluated': cot_mode}
         
     except Exception as e:
-        return {'evaluation': f'ERROR: {str(e)}'}
+        return {'evaluation': f'ERROR: {str(e)}', 'cot_evaluated': cot_mode}
 
 
 def load_inference_results(file_path: str) -> pd.DataFrame:

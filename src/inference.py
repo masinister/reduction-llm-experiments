@@ -26,6 +26,7 @@ def parse_args():
                         choices=["float16", "bfloat16", "float32"])
     parser.add_argument("--merge_adapters", action="store_true",
                         help="Merge LoRA adapters into base model")
+    parser.add_argument("--cot", action="store_true", help="Use chain-of-thought format for inference")
     return parser.parse_args()
 
 
@@ -113,10 +114,16 @@ def run_inference(model, tokenizer, dataset, dataset_name, args):
     for i, example in enumerate(dataset):
         print(f"{dataset_name} example {i+1}/{len(dataset)}")
 
+        # Choose system message based on CoT flag
+        if args.cot:
+            system_content = "Write a natural-language LaTeX reduction given source and target. Think step by step."
+        else:
+            system_content = "Write a natural-language LaTeX reduction given source and target."
+
         messages = [
             {
                 "role": "system",
-                "content": "Write a natural-language LaTeX reduction given source and target."
+                "content": system_content
             },
             {
                 "role": "user", 
@@ -164,7 +171,8 @@ def run_inference(model, tokenizer, dataset, dataset_name, args):
             "target_text": example["target_text"],
             "ground_truth_reduction": example.get("reduction_full_text", ""),
             "generated_reduction": generated_reduction,
-            "prompt": prompt
+            "prompt": prompt,
+            "cot_mode": args.cot
         })
 
     return results

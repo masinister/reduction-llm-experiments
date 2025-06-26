@@ -9,8 +9,8 @@
 #SBATCH --mem=400G
 #SBATCH --time=24:00:00
 
-# Usage: ./finetune.sh MODEL_NAME CSV_PATH OUTPUT_DIR BATCH_SIZE GRAD_ACCUM LEARNING_RATE EPOCHS MAX_LENGTH LORA_R LORA_ALPHA LORA_DROPOUT
-# All parameters are required
+# Usage: ./finetune.sh MODEL_NAME CSV_PATH OUTPUT_DIR BATCH_SIZE GRAD_ACCUM LEARNING_RATE EPOCHS MAX_LENGTH LORA_R LORA_ALPHA LORA_DROPOUT [--cot]
+# All parameters except --cot are required
 
 # Enable strict error handling + job control
 set -euxo pipefail
@@ -45,6 +45,13 @@ LORA_R=${9}
 LORA_ALPHA=${10}
 LORA_DROPOUT=${11}
 
+# Check for optional --cot flag
+COT_FLAG=""
+if [[ "${12}" == "--cot" ]]; then
+    COT_FLAG="--cot"
+    echo "Using chain-of-thought mode"
+fi
+
 # Set master port (can override via env)
 export MASTER_PORT=${MASTER_PORT:-29501}
 
@@ -61,6 +68,11 @@ echo "LoRA rank: $LORA_R"
 echo "LoRA alpha: $LORA_ALPHA"
 echo "LoRA dropout: $LORA_DROPOUT"
 echo "Master port: $MASTER_PORT"
+if [[ -n "$COT_FLAG" ]]; then
+    echo "Chain-of-thought mode: ENABLED"
+else
+    echo "Chain-of-thought mode: DISABLED"
+fi
 echo ""
 
 # Pre-cleanup: kill stale processes listening on MASTER_PORT
@@ -140,7 +152,8 @@ torchrun \
   --lora_dropout "$LORA_DROPOUT" \
   --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
-  --cpu_offload
+  --cpu_offload \
+  $COT_FLAG
 
 echo ""
 echo "✅ Fine-tuning completed at $(date)"

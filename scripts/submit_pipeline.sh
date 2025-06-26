@@ -1,11 +1,18 @@
 #!/bin/bash
 
-# Usage: ./submit_pipeline.sh LOG_DIR CONFIG_FILE
-# Both LOG_DIR and CONFIG_FILE are required
+# Usage: ./submit_pipeline.sh LOG_DIR CONFIG_FILE [--cot]
+# LOG_DIR and CONFIG_FILE are required, --cot is optional
 
 # Get the log directory from the first parameter
 LOG_DIR="$1"
 CONFIG_FILE="$2"
+
+# Check for optional --cot flag
+COT_FLAG=""
+if [[ "${3}" == "--cot" ]]; then
+    COT_FLAG="--cot"
+    echo "Using chain-of-thought mode for entire pipeline"
+fi
 
 # Load configuration
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -45,20 +52,25 @@ echo "LoRA dropout: $LORA_DROPOUT"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Judge model: $JUDGE_MODEL"
 echo "Evaluation output dir: $EVAL_OUTPUT"
+if [[ -n "$COT_FLAG" ]]; then
+    echo "Chain-of-thought mode: ENABLED"
+else
+    echo "Chain-of-thought mode: DISABLED"
+fi
 echo "============================================================="
 
 # Submit jobs with dependencies
 echo "🚀 Submitting fine-tuning job..."
-FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" scripts/finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH" "$LORA_R" "$LORA_ALPHA" "$LORA_DROPOUT")
+FINETUNE_JOB_ID=$(sbatch --parsable --output="${LOG_DIR}/finetune_%j.out" --error="${LOG_DIR}/finetune_%j.err" scripts/finetune.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$BATCH_SIZE" "$GRAD_ACCUM" "$LEARNING_RATE" "$EPOCHS" "$MAX_LENGTH" "$LORA_R" "$LORA_ALPHA" "$LORA_DROPOUT" $COT_FLAG)
 echo "Fine-tuning job ID: $FINETUNE_JOB_ID"
 
 echo "🔍 Submitting inference job (depends on fine-tuning)..."
-INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$MAX_LENGTH")
+INFERENCE_JOB_ID=$(sbatch --parsable --dependency=afterok:$FINETUNE_JOB_ID --output="${LOG_DIR}/inference_%j.out" --error="${LOG_DIR}/inference_%j.err" scripts/inference.sh "$MODEL_NAME" "$CSV_PATH" "$OUTPUT_DIR" "$INFERENCE_OUTPUT" "$MAX_LENGTH" $COT_FLAG)
 echo "Inference job ID: $INFERENCE_JOB_ID"
 echo "  -> Dependency: afterok:$FINETUNE_JOB_ID (will run only if fine-tuning succeeds)"
 
 echo "📊 Submitting evaluation job for both sets (depends on inference)..."
-EVAL_JOB_ID=$(sbatch --parsable --dependency=afterok:$INFERENCE_JOB_ID --output="${LOG_DIR}/evaluate_%j.out" --error="${LOG_DIR}/evaluate_%j.err" scripts/evaluate.sh "$INFERENCE_OUTPUT" "$JUDGE_MODEL" "$EVAL_OUTPUT" "$EVAL_MAX_LENGTH")
+EVAL_JOB_ID=$(sbatch --parsable --dependency=afterok:$INFERENCE_JOB_ID --output="${LOG_DIR}/evaluate_%j.out" --error="${LOG_DIR}/evaluate_%j.err" scripts/evaluate.sh "$INFERENCE_OUTPUT" "$JUDGE_MODEL" "$EVAL_OUTPUT" "$EVAL_MAX_LENGTH" $COT_FLAG)
 echo "Evaluation job ID: $EVAL_JOB_ID"
 echo "  -> Dependency: afterok:$INFERENCE_JOB_ID (will run only if inference succeeds)"
 

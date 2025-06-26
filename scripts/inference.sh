@@ -9,8 +9,8 @@
 #SBATCH --mem=256G
 #SBATCH --time=12:00:00
 
-# Usage: ./inference.sh BASE_MODEL CSV_PATH MODEL_PATH INFERENCE_OUTPUT MAX_LENGTH
-# All parameters are required
+# Usage: ./inference.sh BASE_MODEL CSV_PATH MODEL_PATH INFERENCE_OUTPUT MAX_LENGTH [--cot]
+# All parameters except --cot are required
 # 
 # BASE_MODEL: The base model name used in finetune.py (e.g., meta-llama/Llama-3.3-70B-Instruct)
 # CSV_PATH: Path to the CSV dataset file
@@ -40,12 +40,24 @@ MODEL_PATH=${3}
 INFERENCE_OUTPUT=${4}
 MAX_LENGTH=${5}
 
+# Check for optional --cot flag
+COT_FLAG=""
+if [[ "${6}" == "--cot" ]]; then
+    COT_FLAG="--cot"
+    echo "Using chain-of-thought mode for inference"
+fi
+
 echo ""
 echo "Base model: $BASE_MODEL"
 echo "CSV path: $CSV_PATH"
 echo "Model path (finetune.py output): $MODEL_PATH"
 echo "Inference output dir: $INFERENCE_OUTPUT"
 echo "Max length: $MAX_LENGTH"
+if [[ -n "$COT_FLAG" ]]; then
+    echo "Chain-of-thought mode: ENABLED"
+else
+    echo "Chain-of-thought mode: DISABLED"
+fi
 echo ""
 
 # Validate required files
@@ -108,7 +120,8 @@ python src/inference.py \
     --max_new_tokens 2048 \
     --temperature 0.7 \
     --do_sample \
-    --merge_adapters
+    --merge_adapters \
+    $COT_FLAG
 
 echo ""
 echo "✅ Inference completed at $(date)"

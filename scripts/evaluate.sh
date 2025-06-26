@@ -9,8 +9,8 @@
 #SBATCH --mem=256G
 #SBATCH --time=3:00:00
 
-# Usage: ./evaluate.sh INFERENCE_DIR JUDGE_MODEL OUTPUT_DIR MAX_LENGTH
-# All parameters are required
+# Usage: ./evaluate.sh INFERENCE_DIR JUDGE_MODEL OUTPUT_DIR MAX_LENGTH [--cot]
+# All parameters except --cot are required
 # 
 # INFERENCE_DIR: Directory containing inference results CSV files (inference_results_test.csv and inference_results_validation.csv)
 # JUDGE_MODEL: Model to use as judge (e.g., meta-llama/Llama-3.3-70B-Instruct)
@@ -38,6 +38,13 @@ JUDGE_MODEL=${2}
 OUTPUT_DIR=${3}
 MAX_LENGTH=${4}
 
+# Check for optional --cot flag
+COT_FLAG=""
+if [[ "${5}" == "--cot" ]]; then
+    COT_FLAG="--cot"
+    echo "Using chain-of-thought evaluation mode"
+fi
+
 # Define the expected inference result file
 INFERENCE_RESULTS="$INFERENCE_DIR/inference_results.csv"
 
@@ -46,6 +53,11 @@ echo "Inference directory: $INFERENCE_DIR"
 echo "Judge model: $JUDGE_MODEL"
 echo "Output directory: $OUTPUT_DIR"
 echo "Max length: $MAX_LENGTH"
+if [[ -n "$COT_FLAG" ]]; then
+    echo "Chain-of-thought evaluation: ENABLED"
+else
+    echo "Chain-of-thought evaluation: DISABLED"
+fi
 echo ""
 
 # Check if inference results file exists
@@ -66,7 +78,8 @@ python src/evaluate.py \
     --temperature 0.1 \
     --device auto \
     --model_dtype bfloat16 \
-    --batch_size 1
+    --batch_size 1 \
+    $COT_FLAG
 
 echo ""
 echo "✅ Evaluation completed successfully!"

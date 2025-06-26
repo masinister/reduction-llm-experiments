@@ -74,6 +74,7 @@ def parse_args():
                    choices=["float16", "bfloat16", "float32"])
     p.add_argument("--cpu_offload", action="store_true")
     p.add_argument("--resume", action="store_true", help="Resume from latest DCP checkpoint")
+    p.add_argument("--cot", action="store_true", help="Use chain-of-thought data format")
     return p.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -112,21 +113,39 @@ def load_and_prepare(args, tokenizer):
     })
 
     def tokenize_fn(ex):
-        # Construct chat format messages
-        messages = [
-            {
-                "role": "system",
-                "content": "Write a natural-language LaTeX reduction given source and target."
-            },
-            {
-                "role": "user", 
-                "content": f"Source: {ex['source_text']}\nTarget: {ex['target_text']}"
-            },
-            {
-                "role": "assistant",
-                "content": ex["reduction_full_text"]
-            }
-        ]
+        # Check if we have chain-of-thought data
+        if args.cot and 'chain_of_thought' in ex and ex['chain_of_thought'] and ex['chain_of_thought'].strip():
+            # CoT format: include chain-of-thought reasoning before the reduction
+            messages = [
+                {
+                    "role": "system",
+                    "content": "Write a natural-language LaTeX reduction given source and target. Think step by step."
+                },
+                {
+                    "role": "user", 
+                    "content": f"Source: {ex['source_text']}\nTarget: {ex['target_text']}"
+                },
+                {
+                    "role": "assistant",
+                    "content": f"Let me think through this step by step:\n\n{ex['chain_of_thought']}\n\nTherefore, the reduction is:\n\n{ex['reduction_full_text']}"
+                }
+            ]
+        else:
+            # Standard format: direct reduction without chain-of-thought
+            messages = [
+                {
+                    "role": "system",
+                    "content": "Write a natural-language LaTeX reduction given source and target."
+                },
+                {
+                    "role": "user", 
+                    "content": f"Source: {ex['source_text']}\nTarget: {ex['target_text']}"
+                },
+                {
+                    "role": "assistant",
+                    "content": ex["reduction_full_text"]
+                }
+            ]
         
         # Use chat template to format the conversation
         try:

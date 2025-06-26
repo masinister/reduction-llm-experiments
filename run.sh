@@ -1,11 +1,23 @@
 #!/bin/bash
 
 # SLURM submission wrapper for the pipeline
-# Usage: ./run.sh [CONFIG_FILE]
+# Usage: ./run.sh [CONFIG_FILE] [--cot]
 # Optional: Specify a custom config file, defaults to ./config.sh
+# Optional: Use --cot flag to enable chain-of-thought mode
 
-# Load configuration
+# Parse arguments
 CONFIG_FILE=${1:-"./config.sh"}
+COT_FLAG=""
+
+# Check if first argument is --cot (when no config file is specified)
+if [[ "$1" == "--cot" ]]; then
+    CONFIG_FILE="./config.sh"
+    COT_FLAG="--cot"
+# Check if second argument is --cot (when config file is specified)
+elif [[ "$2" == "--cot" ]]; then
+    COT_FLAG="--cot"
+fi
+# Load configuration
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "❌ Error: Config file '$CONFIG_FILE' not found!"
     echo "Please create a config file or specify a valid path."
@@ -15,6 +27,12 @@ fi
 
 echo "📋 Loading configuration from: $CONFIG_FILE"
 source "$CONFIG_FILE"
+
+if [[ -n "$COT_FLAG" ]]; then
+    echo "🧠 Chain-of-thought mode: ENABLED"
+else
+    echo "🧠 Chain-of-thought mode: DISABLED"
+fi
 
 # Create logs directory with timestamp
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -29,7 +47,7 @@ PIPELINE_JOB_ID=$(sbatch --parsable \
     --job-name=llama_pipeline \
     --output="${LOG_DIR}/pipeline_%j.out" \
     --error="${LOG_DIR}/pipeline_%j.err" \
-    scripts/submit_pipeline.sh "$LOG_DIR" "$CONFIG_FILE")
+    scripts/submit_pipeline.sh "$LOG_DIR" "$CONFIG_FILE" $COT_FLAG)
 
 echo "Pipeline job ID: $PIPELINE_JOB_ID"
 echo ""
