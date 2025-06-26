@@ -163,23 +163,26 @@ def load_and_prepare(args, tokenizer):
                 f"Assistant: {messages[2]['content']}"
             )
         
-        # Tokenize the formatted text with padding
+        # Tokenize the formatted text with max_length padding
         tok = tokenizer(
             formatted_text, 
             truncation=True, 
             max_length=args.max_length,
-            padding=False,  # Don't pad here, let DataCollator handle it
+            padding="max_length",  # Pad to max_length for consistent tensor sizes
             return_tensors=None  # Return lists, not tensors
         )
+        # Ensure labels are properly aligned and same length as input_ids
         tok["labels"] = tok["input_ids"].copy()
         return tok
 
-    tokenized_splits = splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
+    # Get column names before mapping to ensure we remove all raw text fields
+    columns_to_remove = splits["train"].column_names
+    tokenized_splits = splits.map(tokenize_fn, batched=False, remove_columns=columns_to_remove)
     
     # Debug: Print tokenization statistics
     train_lengths = [len(ex['input_ids']) for ex in tokenized_splits["train"]]
     print(f"Tokenization stats - Min: {min(train_lengths)}, Max: {max(train_lengths)}, Avg: {sum(train_lengths)/len(train_lengths):.1f}")
-    print(f"Sequences > max_length ({args.max_length}): {sum(1 for l in train_lengths if l > args.max_length)}")
+    print(f"All sequences should be exactly max_length ({args.max_length}): {all(l == args.max_length for l in train_lengths)}")
     
     return tokenized_splits
 
@@ -276,11 +279,9 @@ def main():
 
     tokenized_ds = load_and_prepare(args, tokenizer)
     
-    # Use DataCollatorForLanguageModeling with padding
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, 
         mlm=False,
-        pad_to_multiple_of=8,  # Pad to multiple of 8 for efficiency
         return_tensors="pt"
     )
 
