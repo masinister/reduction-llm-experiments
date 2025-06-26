@@ -40,7 +40,8 @@ def load_cot_model(args):
     model_kwargs = {
         "torch_dtype": model_dtype,
         "trust_remote_code": True,
-        "device_map": "auto" if args.device == "auto" else None
+        "device_map": "auto" if args.device == "auto" else None,
+        "attn_implementation": "flash_attention_2" if torch.cuda.is_available() else "eager"
     }
     
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.cot_model)
@@ -50,9 +51,10 @@ def load_cot_model(args):
         "text-generation",
         model=args.cot_model,
         tokenizer=tokenizer,
-        max_new_tokens=32768,
+        max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_p=0.95,
+        cache_implementation="static",
         **model_kwargs
     )
     
