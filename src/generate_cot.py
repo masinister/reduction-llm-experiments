@@ -10,7 +10,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate chain-of-thought reasoning for Karp dataset")
     parser.add_argument("--input_csv", type=str, default="~/data/karp.csv",
                         help="Path to input karp.csv file")
-    parser.add_argument("--output_csv", type=str, default="../data/karp_cot.csv",
+    parser.add_argument("--output_csv", type=str, default="data/karp_cot.csv",
                         help="Path to save augmented karp_cot.csv file")
     parser.add_argument("--cot_model", type=str, default="meta-llama/Llama-3.3-70B-Instruct",
                         help="Model to use for generating chain-of-thought reasoning")

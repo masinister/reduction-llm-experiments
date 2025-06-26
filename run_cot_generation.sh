@@ -6,7 +6,7 @@
 
 # Default parameters
 DEFAULT_INPUT_CSV="~/data/karp.csv"
-DEFAULT_OUTPUT_CSV="../data/karp_cot.csv"
+DEFAULT_OUTPUT_CSV="data/karp_cot.csv"
 DEFAULT_COT_MODEL="nvidia/Llama-3_3-Nemotron-Super-49B-v1"
 DEFAULT_MAX_LENGTH=32768
 
