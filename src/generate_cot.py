@@ -61,7 +61,7 @@ def create_cot_messages(source_text: str,
                         num_steps: int = 5) -> list:
     """Produce a synthetic “chain of thought” leading to a known reduction."""
     
-    system_message = """detailed thinking {thinking}
+    system_message = f"""detailed thinking {thinking}
 
 You are a complexity-theory expert.  Your goal is **not** to solve the reduction from scratch, but to **invent** a realistic-sounding internal reasoning trace that an expert *could* have gone through, step by step, to arrive at the given reduction.  
 - Each step should be a *brief* thought (1-2 sentences).  
