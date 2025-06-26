@@ -2,7 +2,7 @@ import os
 import argparse
 import torch
 import pandas as pd
-import transformers
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import Dict
 
 
@@ -14,9 +14,11 @@ def parse_args():
                         help="Path to save augmented karp_cot.csv file")
     parser.add_argument("--cot_model", type=str, default="meta-llama/Llama-3.3-70B-Instruct",
                         help="Model to use for generating chain-of-thought reasoning")
-    parser.add_argument("--max_new_tokens", type=int, default=32768,
+    parser.add_argument("--max_length", type=int, default=32768,
                         help="Maximum sequence length for CoT model")
-    parser.add_argument("--temperature", type=float, default=0.6,
+    parser.add_argument("--max_new_tokens", type=int, default=32768,
+                        help="Maximum new tokens to generate")
+    parser.add_argument("--temperature", type=float, default=0.7,
                         help="Temperature for CoT model generation")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--model_dtype", type=str, default="bfloat16",
@@ -25,41 +27,31 @@ def parse_args():
                         help="Batch size for generation (keep low for large models)")
     parser.add_argument("--resume_from", type=int, default=0,
                         help="Resume generation from specific index (for interrupted runs)")
-    parser.add_argument("--thinking", type=str, default="on", choices=["on", "off"],
-                        help="Enable detailed thinking mode for the model")
     return parser.parse_args()
 
 
 def load_cot_model(args):
-    """Load the chain-of-thought generation pipeline"""
+    """Load the chain-of-thought generation model and tokenizer"""
     print(f"Loading CoT model: {args.cot_model}")
     
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     model_dtype = dtype_map[args.model_dtype]
     
-    model_kwargs = {
-        "torch_dtype": model_dtype,
-        "trust_remote_code": True,
-        "device_map": "auto" if args.device == "auto" else None,
-        "attn_implementation": "flash_attention_2" if torch.cuda.is_available() else "eager"
-    }
+    tokenizer = AutoTokenizer.from_pretrained(args.cot_model)
+    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.cot_model)
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    
-    pipeline = transformers.pipeline(
-        "text-generation",
-        model=args.cot_model,
-        tokenizer=tokenizer,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_p=0.95,
-        cache_implementation="static",
-        **model_kwargs
+    model = AutoModelForCausalLM.from_pretrained(
+        args.cot_model,
+        torch_dtype=model_dtype,
+        device_map="auto" if args.device == "auto" else None,
+        trust_remote_code=True,
     )
     
-    print("✅ CoT pipeline loaded successfully")
-    return pipeline
+    model.config.use_cache = True
+    model.eval()
+    
+    print("✅ CoT model loaded successfully")
+    return model, tokenizer
 
 
 def create_cot_messages(source_text: str, target_text: str, reduction_text: str, thinking: str = "on") -> list:
@@ -94,35 +86,41 @@ Please explain the reasoning in 3 concise (1-2 sentence) chain-of-thought steps.
     return messages
 
 
-def generate_single_cot(pipeline, example: Dict, args) -> str:
+def generate_single_cot(model, tokenizer, example: Dict, args) -> str:
     """Generate chain-of-thought reasoning for a single example"""
     
     messages = create_cot_messages(
         example['source_text'],
         example['target_text'], 
-        example['reduction_full_text'],
-        args.thinking
+        example['reduction_full_text']
     )
     
+    # Apply chat template
+    prompt = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+    )
+    
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
+    device = next(model.parameters()).device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
     try:
-        # Use the pipeline with chat messages directly
-        result = pipeline(messages)
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                do_sample=True if args.temperature > 0 else False,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
         
-        # Parse the output following the recommended approach
-        response = ""
-        for message in result[0]["generated_text"]:
-            if message.get("role") == "assistant":
-                response = message.get("content", "")
-                break
-        else:
-            # If no assistant message found
-            response = str(result[0]["generated_text"])
+        response = tokenizer.decode(output[0], skip_special_tokens=True)
+        cot_reasoning = response[len(prompt):].strip()
         
-        # Filter out the <think> section if present
-        if "<think>" in response and "</think>" in response:
-            response = response.split("</think>", 1)[-1].strip()
-        
-        return response.strip() if response else "ERROR: No valid response generated"
+        return cot_reasoning
         
     except Exception as e:
         return f'ERROR: {str(e)}'
@@ -149,13 +147,6 @@ def load_karp_dataset(file_path: str) -> pd.DataFrame:
     return df
 
 
-def save_checkpoint(df: pd.DataFrame, output_path: str, current_index: int):
-    """Save intermediate results as checkpoint"""
-    checkpoint_path = output_path.replace('.csv', f'_checkpoint_{current_index}.csv')
-    df.to_csv(checkpoint_path, index=False, encoding='utf-8')
-    print(f"Checkpoint saved: {checkpoint_path}")
-
-
 def main():
     args = parse_args()
     
@@ -167,8 +158,6 @@ def main():
     print(f"CoT model: {args.cot_model}")
     print(f"Device: {args.device}")
     print(f"Model dtype: {args.model_dtype}")
-    print(f"Temperature: {args.temperature}")
-    print(f"Thinking mode: {args.thinking}")
     print(f"Resume from index: {args.resume_from}")
     print("="*60)
     
@@ -193,7 +182,7 @@ def main():
         df['chain_of_thought'] = ""
     
     # Load CoT model
-    pipeline = load_cot_model(args)
+    model, tokenizer = load_cot_model(args)
     
     # Generate chain-of-thought reasoning for each example
     print("Starting chain-of-thought generation...")
@@ -207,14 +196,10 @@ def main():
             continue
         
         example = df.iloc[i].to_dict()
-        cot_reasoning = generate_single_cot(pipeline, example, args)
+        cot_reasoning = generate_single_cot(model, tokenizer, example, args)
         
         # Update the dataframe
         df.iloc[i, df.columns.get_loc('chain_of_thought')] = cot_reasoning
-        
-        # Save progress every 10 examples
-        if (i + 1) % 10 == 0:
-            save_checkpoint(df, output_path, i + 1)
         
         # Print preview of generated reasoning
         if not cot_reasoning.startswith('ERROR:'):
