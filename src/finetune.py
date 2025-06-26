@@ -152,7 +152,7 @@ def load_and_prepare(args, tokenizer):
             formatted_text = tokenizer.apply_chat_template(
                 messages, 
                 tokenize=False, 
-                add_generation_prompt=True
+                add_generation_prompt=False  # Don't add generation prompt for training
             )
         except Exception as e:
             # Fallback to manual formatting if tokenizer doesn't support chat templates
@@ -163,12 +163,24 @@ def load_and_prepare(args, tokenizer):
                 f"Assistant: {messages[2]['content']}"
             )
         
-        # Tokenize the formatted text
-        tok = tokenizer(formatted_text, truncation=True, max_length=args.max_length)
+        # Tokenize the formatted text with padding
+        tok = tokenizer(
+            formatted_text, 
+            truncation=True, 
+            max_length=args.max_length,
+            padding=False,  # Don't pad here, let DataCollator handle it
+            return_tensors=None  # Return lists, not tensors
+        )
         tok["labels"] = tok["input_ids"].copy()
         return tok
 
     tokenized_splits = splits.map(tokenize_fn, batched=False, remove_columns=splits["train"].column_names)
+    
+    # Debug: Print tokenization statistics
+    train_lengths = [len(ex['input_ids']) for ex in tokenized_splits["train"]]
+    print(f"Tokenization stats - Min: {min(train_lengths)}, Max: {max(train_lengths)}, Avg: {sum(train_lengths)/len(train_lengths):.1f}")
+    print(f"Sequences > max_length ({args.max_length}): {sum(1 for l in train_lengths if l > args.max_length)}")
+    
     return tokenized_splits
 
 
@@ -195,6 +207,9 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # Ensure padding side is left for causal LM training
+    tokenizer.padding_side = "right"
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
@@ -260,7 +275,14 @@ def main():
     print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
     tokenized_ds = load_and_prepare(args, tokenizer)
-    data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    
+    # Use DataCollatorForLanguageModeling with padding
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, 
+        mlm=False,
+        pad_to_multiple_of=8,  # Pad to multiple of 8 for efficiency
+        return_tensors="pt"
+    )
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
