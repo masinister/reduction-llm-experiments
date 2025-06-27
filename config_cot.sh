@@ -20,7 +20,7 @@ BATCH_SIZE=2  # Smaller batch due to longer sequences
 GRAD_ACCUM=32  # Increased accumulation to maintain effective batch size
 LEARNING_RATE=5e-6  # Slightly lower for better reasoning training
 EPOCHS=20  # Fewer epochs may suffice with enhanced data
-MAX_LENGTH=8192  # Increased for reasoning chains
+MAX_LENGTH=4096  # Increased for reasoning chains
 
 # LoRA parameters - Slightly higher for reasoning capabilities
 LORA_R=16
