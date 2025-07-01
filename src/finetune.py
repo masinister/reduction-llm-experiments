@@ -229,7 +229,7 @@ def main():
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
-        device_map=None,
+        device_map="auto",
         trust_remote_code=True,
         quantization_config=bnb_config,
         attn_implementation="sdpa",
