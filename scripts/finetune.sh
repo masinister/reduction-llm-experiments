@@ -140,9 +140,6 @@ accelerate launch \
   --fsdp_sharding_strategy FULL_SHARD \
   --fsdp_auto_wrap_policy NO_WRAP \
   --fsdp_use_orig_params True \
-  --fsdp_backward_prefetch_policy BACKWARD_PRE \
-  --fsdp_forward_prefetch false \
-  --fsdp_cpu_ram_efficient_loading false \
   src/finetune.py \
     --model_name "$MODEL_NAME" \
     --csv_path "$CSV_PATH" \
