@@ -1,11 +1,12 @@
 """
 Fine-tuning script with LoRA, FSDP, and Sequence Parallelism.
 
-Hybrid Parallelism Strategy:
+Hybrid Parallelism Strategy (Clean Wrapping Order):
 - REQUIRES multi-GPU setup for SP+FSDP hybrid training
-- Sequence Parallelism applied to all normalization layers 
-- FSDP with custom auto_wrap_policy excludes SP-modified modules
-- Prevents PyTorch storage errors through proper module exclusion
+- Step 1: Apply Sequence Parallelism to all normalization layers 
+- Step 2: Explicitly wrap model with FSDP using SP-aware auto_wrap_policy
+- SP-aware FSDP auto_wrap_policy excludes SP-modified modules
+- Prevents PyTorch storage errors through proper module exclusion and clean wrapping order
 """
 
 import os
@@ -20,6 +21,7 @@ import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor.parallel import parallelize_module, SequenceParallel
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -264,6 +266,7 @@ def main():
         raise RuntimeError(f"SP+FSDP hybrid training requires at least 2 GPUs, found {torch.cuda.device_count()}")
     
     print(f"🚀 SP+FSDP hybrid training enabled for {torch.cuda.device_count()} GPUs")
+    print("   → CLEAN WRAPPING ORDER: SP first, then FSDP")
     print("   → SP handles normalization layers across sequence dimension")
     print("   → FSDP provides parameter sharding with custom auto_wrap_policy")
     
@@ -373,6 +376,24 @@ def main():
     print(f"Model has {model.num_parameters():,} total parameters")
     print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
+    # CLEAN WRAPPING ORDER: Apply FSDP after sequence parallelism
+    print("🔧 Applying FSDP wrapping with SP-aware auto_wrap_policy...")
+    print(f"   → Excluding {len(_sp_modified_modules)} SP-modified modules from FSDP wrapping")
+    
+    # Create SP-aware FSDP auto_wrap_policy
+    sp_aware_policy = create_sp_aware_fsdp_policy(min_num_params=1e8)
+    
+    # Explicitly wrap the model with FSDP after SP is applied
+    model = FSDP(
+        model,
+        auto_wrap_policy=sp_aware_policy,
+        use_orig_params=True,
+        device_id=torch.cuda.current_device(),
+        sync_module_states=True,
+    )
+    print("✅ FSDP wrapping completed successfully")
+    print_memory_usage()
+
     tokenized_ds = load_and_prepare(args, tokenizer)
     
     data_collator = DataCollatorForLanguageModeling(
@@ -381,12 +402,8 @@ def main():
         return_tensors="pt"
     )
 
-    # Configure FSDP with SP-aware auto_wrap_policy
-    print(f"🔧 Using SP-aware FSDP auto_wrap_policy to exclude {len(_sp_modified_modules)} SP-modified modules")
-    fsdp_config = {
-        "use_orig_params": "true",
-        "auto_wrap_policy": create_sp_aware_fsdp_policy(min_num_params=1e8)
-    }
+    # Configure training args WITHOUT FSDP (since we already wrapped the model)
+    print("🎯 Configuring training arguments (FSDP already applied to model)")
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -408,9 +425,7 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        # Always use FSDP for SP+FSDP hybrid training
-        fsdp="full_shard",
-        fsdp_config=fsdp_config,
+        # No FSDP config needed - model is already wrapped
         ddp_find_unused_parameters=False,
     )
 
@@ -424,7 +439,7 @@ def main():
     )
     
     # Debug: Check gradient setup after trainer initialization
-    print("Post-trainer initialization gradient check (SP+FSDP hybrid mode):")
+    print("Post-trainer initialization gradient check (explicit SP+FSDP hybrid mode):")
     grad_params = 0
     total_params = 0
     for name, param in trainer.model.named_parameters():
@@ -434,6 +449,7 @@ def main():
             if grad_params <= 3:  # Print first few
                 print(f"  {name}: requires_grad={param.requires_grad}, dtype={param.dtype}")
     print(f"  Total: {grad_params}/{total_params} parameters require gradients")
+    print(f"  Model is FSDP-wrapped: {isinstance(trainer.model, FSDP)}")
     
     if args.resume:
         try:
