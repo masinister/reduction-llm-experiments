@@ -1,3 +1,15 @@
+"""
+Fine-tuning script with support for LoRA, FSDP, and Sequence Parallelism.
+
+Hybrid Parallelism Strategy:
+- Sequence parallelism + FSDP enabled by default for multi-GPU setups
+- Sequence parallelism handles longer sequences by distributing across sequence dimension
+- FSDP provides parameter sharding for memory efficiency
+- Use --disable_sequence_parallel to use FSDP only
+- Use --disable_fsdp to use sequence parallelism only
+- Single GPU uses quantization for memory efficiency
+"""
+
 import os
 import argparse
 import json
@@ -6,6 +18,8 @@ import random
 
 import torch
 import torch.distributed as dist
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.tensor.parallel import parallelize_module, SequenceParallel
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -75,6 +89,8 @@ def parse_args():
     p.add_argument("--cpu_offload", action="store_true")
     p.add_argument("--resume", action="store_true", help="Resume from latest DCP checkpoint")
     p.add_argument("--cot", action="store_true", help="Use chain-of-thought data format")
+    p.add_argument("--disable_sequence_parallel", action="store_true", help="Disable sequence parallelism")
+    p.add_argument("--disable_fsdp", action="store_true", help="Disable FSDP (useful for debugging)")
     return p.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -190,6 +206,21 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     
+    # Enable sequence parallelism by default for multi-GPU setups
+    args.sequence_parallel = torch.cuda.device_count() > 1 and not args.disable_sequence_parallel
+    
+    # Enable FSDP by default for multi-GPU setups (can be combined with sequence parallelism)
+    args.use_fsdp = torch.cuda.device_count() > 1 and not args.disable_fsdp
+    
+    if args.sequence_parallel and args.use_fsdp:
+        print(f"Sequence parallelism + FSDP enabled for {torch.cuda.device_count()} GPUs (hybrid approach)")
+    elif args.sequence_parallel:
+        print(f"Sequence parallelism enabled for {torch.cuda.device_count()} GPUs")
+    elif args.use_fsdp:
+        print(f"FSDP enabled for {torch.cuda.device_count()} GPUs")
+    else:
+        print("Single GPU or distributed training disabled")
+    
     if torch.cuda.device_count() > 1:
         if not dist.is_initialized():
             # Initialize with longer timeout to handle evaluation delays
@@ -216,7 +247,7 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # Configure quantization for Q-LoRA (only for single GPU to avoid FSDP conflicts)
+    # Configure quantization for Q-LoRA (only for single GPU)
     use_quantization = torch.cuda.device_count() == 1
     bnb_config = None
     
@@ -229,8 +260,14 @@ def main():
             bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
         )
         print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
+    elif args.sequence_parallel and args.use_fsdp:
+        print("Using sequence parallelism + FSDP (quantization disabled for compatibility)")
+    elif args.sequence_parallel:
+        print("Using sequence parallelism (quantization disabled for compatibility)")
+    elif args.use_fsdp:
+        print("Using FSDP (quantization disabled for compatibility)")
     else:
-        print("Using full precision LoRA (multi-GPU FSDP mode - quantization disabled)")
+        print("Using full precision LoRA")
 
     # Load the base model with FSDP-compatible settings
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -254,8 +291,26 @@ def main():
     )
     model = get_peft_model(base_model, peft_cfg)
     
-    if torch.cuda.device_count() > 1:
-        # Make sure all LoRA parameters require gradients
+    # Initialize sequence parallelism if requested and multi-GPU available
+    if args.sequence_parallel and torch.cuda.device_count() > 1:
+        try:
+            print(f"Initializing sequence parallelism with {torch.cuda.device_count()} GPUs...")
+            
+            # Create device mesh across all GPUs
+            mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+            print(f"Device mesh created: {mesh}")
+            
+            # Wrap model with SequenceParallel
+            # Note: sequence_dim=1 assumes sequence dimension is the second dimension (batch, seq, ...)
+            model = parallelize_module(model, mesh=mesh, style=SequenceParallel(sequence_dim=1))
+            print("Model wrapped with SequenceParallel")
+        except Exception as e:
+            print(f"Warning: Failed to initialize sequence parallelism: {e}")
+            print("Falling back to standard multi-GPU training (FSDP)")
+            args.sequence_parallel = False
+    
+    if torch.cuda.device_count() > 1 and args.use_fsdp:
+        # Make sure all LoRA parameters require gradients (FSDP mode)
         for name, param in model.named_parameters():
             if 'lora_' in name:
                 param.requires_grad_(True)
@@ -270,6 +325,15 @@ def main():
                 trainable_params.append(name)
         print(f"Trainable parameters: {len(trainable_params)}")
         print(f"First few trainable params: {trainable_params[:5]}")
+        
+        if args.sequence_parallel:
+            print("Model configured for sequence parallelism + FSDP hybrid approach")
+        else:
+            print("Model configured for FSDP only")
+    elif args.sequence_parallel and torch.cuda.device_count() > 1:
+        # Sequence parallelism only mode
+        model.train()
+        print("Model configured for sequence parallelism only")
     else:
         # Single GPU - just ensure training mode
         model.train()
@@ -305,10 +369,11 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
+        # Enable FSDP when requested (can be combined with sequence parallelism)
+        fsdp="full_shard" if args.use_fsdp else "",
         fsdp_config={
             "use_orig_params": "true",
-        } if torch.cuda.device_count() > 1 else {},
+        } if args.use_fsdp else {},
         ddp_find_unused_parameters=False,
     )
 
@@ -321,8 +386,9 @@ def main():
         callbacks=[MemoryLoggerCallback(), AverageTrainLossCallback()],
     )
     # Debug: Check gradient setup after trainer initialization
-    if torch.cuda.device_count() > 1:
-        print("Post-trainer initialization gradient check:")
+    if torch.cuda.device_count() > 1 and args.use_fsdp:
+        mode_desc = "FSDP + Sequence Parallel" if args.sequence_parallel else "FSDP only"
+        print(f"Post-trainer initialization gradient check ({mode_desc} mode):")
         grad_params = 0
         total_params = 0
         for name, param in trainer.model.named_parameters():
@@ -332,6 +398,10 @@ def main():
                 if grad_params <= 3:  # Print first few
                     print(f"  {name}: requires_grad={param.requires_grad}, dtype={param.dtype}")
         print(f"  Total: {grad_params}/{total_params} parameters require gradients")
+    elif args.sequence_parallel and torch.cuda.device_count() > 1:
+        print("Post-trainer initialization check (Sequence Parallel only mode):")
+        print(f"  Model type: {type(trainer.model)}")
+        print(f"  Device count: {torch.cuda.device_count()}")
     
     if args.resume:
         try:
