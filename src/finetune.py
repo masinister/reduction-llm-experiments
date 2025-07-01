@@ -245,16 +245,13 @@ def create_sp_aware_fsdp_policy(min_num_params=1e8):
     Returns:
         A custom auto_wrap_policy function
     """
-    # Create the base size-based policy
-    base_policy = size_based_auto_wrap_policy(min_num_params=min_num_params)
-    
     def sp_aware_policy(module, recurse, nonwrapped_numel):
         # Never wrap SP-modified modules 
         if module in _sp_modified_modules:
             return False
             
         # Use size-based policy for other modules
-        return base_policy(module, recurse, nonwrapped_numel)
+        return size_based_auto_wrap_policy(module, recurse, nonwrapped_numel, min_num_params)
     
     return sp_aware_policy
 
