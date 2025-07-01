@@ -296,14 +296,35 @@ def main():
         try:
             print(f"Initializing sequence parallelism with {torch.cuda.device_count()} GPUs...")
             
-            # Create device mesh across all GPUs
-            mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-            print(f"Device mesh created: {mesh}")
+            # Create device mesh across all GPUs for tensor parallelism
+            tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+            print(f"Device mesh created: {tp_mesh}")
             
-            # Wrap model with SequenceParallel
-            # Note: sequence_dim=1 assumes sequence dimension is the second dimension (batch, seq, ...)
-            model = parallelize_module(model, mesh=mesh, style=SequenceParallel(sequence_dim=1))
-            print("Model wrapped with SequenceParallel")
+            # Create parallelization plan for LoRA layers
+            # We'll apply sequence parallelism to layer norms and attention/MLP blocks
+            parallelize_plan = {}
+            
+            # For models with standard transformer architecture, apply sequence parallelism
+            # to common layer types that benefit from it
+            for name, module in model.named_modules():
+                if any(layer_type in name.lower() for layer_type in ['layernorm', 'layer_norm', 'norm']):
+                    parallelize_plan[name] = SequenceParallel()
+                elif any(layer_type in name.lower() for layer_type in ['attention', 'self_attn']):
+                    # For attention modules, we can use sequence parallel on the input
+                    if 'lora_' not in name:  # Don't parallelize LoRA adapters themselves
+                        parallelize_plan[name] = SequenceParallel()
+            
+            if parallelize_plan:
+                print(f"Applying sequence parallelism to {len(parallelize_plan)} modules")
+                model = parallelize_module(
+                    module=model,
+                    device_mesh=tp_mesh,
+                    parallelize_plan=parallelize_plan
+                )
+                print("Model wrapped with SequenceParallel")
+            else:
+                print("No suitable modules found for sequence parallelism, skipping")
+                args.sequence_parallel = False
         except Exception as e:
             print(f"Warning: Failed to initialize sequence parallelism: {e}")
             print("Falling back to standard multi-GPU training (FSDP)")
