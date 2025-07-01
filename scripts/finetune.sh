@@ -133,15 +133,9 @@ echo "Environment configured for FSDP fine-tuning."
 
 # Training command
 echo ""
-echo "🚀 Starting training..."
-accelerate launch \
-  --num_processes 4 \
-  --num_machines 1 \
-  --dynamo_backend no \
-  --mixed_precision bf16 \
-  --fsdp_sharding_strategy FULL_SHARD \
-  --fsdp_auto_wrap_policy NO_WRAP \
-  --fsdp_use_orig_params True \
+echo "🚀 Starting training with DDP + 4-bit quantization..."
+torchrun \
+  --nproc_per_node=4 \
   src/finetune.py \
     --model_name "$MODEL_NAME" \
     --csv_path "$CSV_PATH" \

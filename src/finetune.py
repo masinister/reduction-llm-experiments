@@ -69,7 +69,7 @@ def parse_args():
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=int, default=16)
     p.add_argument("--lora_dropout", type=float, default=0.05)
-    p.add_argument("--max_length", type=int, default=2048)
+    p.add_argument("--max_length", type=int, default=4096)
     p.add_argument("--model_dtype", type=str, default="bfloat16",
                    choices=["float16", "bfloat16", "float32"])
     p.add_argument("--cpu_offload", action="store_true")
@@ -190,17 +190,7 @@ def load_and_prepare(args, tokenizer):
 def main():
     args = parse_args()
     
-    if torch.cuda.device_count() > 1:
-        if not dist.is_initialized():
-            # Initialize with longer timeout to handle evaluation delays
-            dist.init_process_group(
-                backend="nccl", 
-                timeout=datetime.timedelta(seconds=3600)  # 1 hour timeout
-            )
-        # Set the device for this process
-        if "LOCAL_RANK" in os.environ:
-            torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
+    # torchrun handles distributed initialization automatically
     print_memory_usage()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -216,25 +206,45 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # Configure quantization for Q-LoRA (now enabled for multi-GPU)
+    # Configure quantization for Q-LoRA with optional CPU offload
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
         bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
+        llm_int8_threshold=6.0,
     )
     
     # Load the base model with QLoRA quantization enabled
+    # Use device_map="auto" for DDP + 4-bit compatibility
+    model_kwargs = {
+        "torch_dtype": dtype_map[args.model_dtype],
+        "device_map": "auto",
+        "trust_remote_code": True,
+        "quantization_config": bnb_config,
+        "attn_implementation": "sdpa",
+    }
+    
+    # Add CPU offload if requested
+    if args.cpu_offload:
+        model_kwargs.update({
+            "offload_folder": "offload",
+            "offload_state_dict": True,
+        })
+    
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=dtype_map[args.model_dtype],
-        device_map="auto",
-        trust_remote_code=True,
-        quantization_config=bnb_config,
-        attn_implementation="sdpa",
+        **model_kwargs
     )
+    
+    # Enable gradient checkpointing BEFORE PEFT injection - critical for 70B + 4K context
+    base_model.gradient_checkpointing_enable()
     base_model.config.use_cache = False
+    
+    # Debug check: Verify 4-bit quantization is working
+    num_4bit = sum(1 for p in base_model.parameters() if p.dtype == torch.int8)
+    print(f"Found {num_4bit} int8 layers (should be >0 for 4-bit quant).")
 
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -248,6 +258,7 @@ def main():
     model = get_peft_model(base_model, peft_cfg)
     
     if torch.cuda.device_count() > 1:
+        print(f"Using DDP with {torch.cuda.device_count()} GPUs and 4-bit quantization")
         # Make sure all LoRA parameters require gradients
         for name, param in model.named_parameters():
             if 'lora_' in name:
@@ -264,6 +275,7 @@ def main():
         print(f"Trainable parameters: {len(trainable_params)}")
         print(f"First few trainable params: {trainable_params[:5]}")
     else:
+        print("Using single GPU with 4-bit quantization")
         # Single GPU - just ensure training mode
         model.train()
     
@@ -298,6 +310,7 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
+        # Simplified DDP settings - torchrun handles the rest
         ddp_find_unused_parameters=False,
     )
 
@@ -332,19 +345,7 @@ def main():
     else:
         trainer.train()
     
-    # Final barrier: ensure all operations are complete
-    if dist.is_initialized():
-        print(f"Rank {dist.get_rank()}: Waiting for all ranks to complete...")
-        try:
-            dist.barrier()
-            print(f"Rank {dist.get_rank()}: All operations completed successfully!")
-            print(f"Rank {dist.get_rank()}: Cleaning up distributed process group...")
-            try:
-                dist.destroy_process_group()
-            except Exception as e:
-                print(f"Warning: Failed to cleanup process group: {e}")
-        except Exception as e:
-            print(f"Rank {dist.get_rank()}: Warning - final barrier failed: {e}")
+    print("✅ Training completed successfully!")
 
 
 if __name__ == "__main__":
