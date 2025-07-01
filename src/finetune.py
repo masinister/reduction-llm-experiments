@@ -21,7 +21,7 @@ import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor.parallel import parallelize_module, SequenceParallel
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -380,8 +380,52 @@ def main():
     print("🔧 Applying FSDP wrapping with SP-aware auto_wrap_policy...")
     print(f"   → Excluding {len(_sp_modified_modules)} SP-modified modules from FSDP wrapping")
     
+    # Ensure all parameters have consistent dtype before FSDP wrapping
+    target_dtype = dtype_map[args.model_dtype]
+    print(f"🔧 Ensuring all parameters and buffers use {target_dtype} dtype...")
+    
+    param_dtype_counts = {}
+    buffer_dtype_counts = {}
+    
+    # Check and convert parameters
+    for name, param in model.named_parameters():
+        if param.dtype not in param_dtype_counts:
+            param_dtype_counts[param.dtype] = 0
+        param_dtype_counts[param.dtype] += 1
+        
+        # Convert parameters to target dtype if needed
+        if param.dtype != target_dtype:
+            print(f"   Converting parameter {name} from {param.dtype} to {target_dtype}")
+            param.data = param.data.to(target_dtype)
+    
+    # Check and convert buffers (but be careful with certain buffer types)
+    for name, buffer in model.named_buffers():
+        if buffer.dtype not in buffer_dtype_counts:
+            buffer_dtype_counts[buffer.dtype] = 0
+        buffer_dtype_counts[buffer.dtype] += 1
+        
+        # Only convert floating point buffers, skip integer/bool buffers
+        if buffer.dtype.is_floating_point and buffer.dtype != target_dtype:
+            print(f"   Converting buffer {name} from {buffer.dtype} to {target_dtype}")
+            buffer.data = buffer.data.to(target_dtype)
+    
+    print(f"   Parameter dtype distribution: {param_dtype_counts}")
+    print(f"   Buffer dtype distribution: {buffer_dtype_counts}")
+    
     # Create SP-aware FSDP auto_wrap_policy
     sp_aware_policy = create_sp_aware_fsdp_policy(min_num_params=1e8)
+    
+    # Configure FSDP mixed precision policy
+    if args.model_dtype in ["bfloat16", "float16"]:
+        mp_policy = MixedPrecision(
+            param_dtype=target_dtype,
+            reduce_dtype=target_dtype,
+            buffer_dtype=target_dtype,
+        )
+        print(f"   Using FSDP mixed precision with {target_dtype}")
+    else:
+        mp_policy = None
+        print("   Using FSDP without mixed precision")
     
     # Explicitly wrap the model with FSDP after SP is applied
     model = FSDP(
@@ -390,6 +434,7 @@ def main():
         use_orig_params=True,
         device_id=torch.cuda.current_device(),
         sync_module_states=True,
+        mixed_precision=mp_policy,
     )
     print("✅ FSDP wrapping completed successfully")
     print_memory_usage()
