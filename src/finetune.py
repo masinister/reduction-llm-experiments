@@ -1,13 +1,11 @@
 """
-Fine-tuning script with support for LoRA, FSDP, and Sequence Parallelism.
+Fine-tuning script with LoRA, FSDP, and Sequence Parallelism.
 
 Hybrid Parallelism Strategy:
-- Sequence parallelism + FSDP enabled by default for multi-GPU setups
-- Sequence parallelism handles longer sequences by distributing across sequence dimension
-- FSDP provides parameter sharding for memory efficiency
-- Use --disable_sequence_parallel to use FSDP only
-- Use --disable_fsdp to use sequence parallelism only
-- Single GPU uses quantization for memory efficiency
+- REQUIRES multi-GPU setup for SP+FSDP hybrid training
+- Sequence Parallelism applied to all normalization layers 
+- FSDP with custom auto_wrap_policy excludes SP-modified modules
+- Prevents PyTorch storage errors through proper module exclusion
 """
 
 import os
@@ -21,6 +19,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor.parallel import parallelize_module, SequenceParallel
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -38,6 +37,9 @@ except ImportError:
     LlamaRMSNorm = None
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
+
+# Global variable to track SP-modified modules for FSDP auto_wrap_policy
+_sp_modified_modules = set()
 
 class MemoryLoggerCallback(TrainerCallback):
     def __init__(self):
@@ -118,12 +120,8 @@ def parse_args():
     p.add_argument("--max_length", type=int, default=2048)
     p.add_argument("--model_dtype", type=str, default="bfloat16",
                    choices=["float16", "bfloat16", "float32"])
-    p.add_argument("--cpu_offload", action="store_true")
     p.add_argument("--resume", action="store_true", help="Resume from latest DCP checkpoint")
     p.add_argument("--cot", action="store_true", help="Use chain-of-thought data format")
-    p.add_argument("--disable_sequence_parallel", action="store_true", help="Disable sequence parallelism")
-    p.add_argument("--disable_fsdp", action="store_true", help="Disable FSDP (useful for debugging)")
-    p.add_argument("--sp_layers_limit", type=int, default=None, help="Limit SP to first N transformer layers (for testing)")
     return p.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -235,39 +233,53 @@ def load_and_prepare(args, tokenizer):
     
     return tokenized_splits
 
+def create_sp_aware_fsdp_policy(min_num_params=1e8):
+    """
+    Create a custom FSDP auto_wrap_policy that excludes SP-modified modules.
+    
+    This policy combines size-based wrapping with exclusion of modules that
+    have been modified by Sequence Parallelism to avoid PyTorch storage errors.
+    
+    Args:
+        min_num_params: Minimum number of parameters to wrap a module
+        
+    Returns:
+        A custom auto_wrap_policy function
+    """
+    # Create the base size-based policy
+    base_policy = size_based_auto_wrap_policy(min_num_params=min_num_params)
+    
+    def sp_aware_policy(module, recurse, nonwrapped_numel):
+        # Never wrap SP-modified modules 
+        if module in _sp_modified_modules:
+            return False
+            
+        # Use size-based policy for other modules
+        return base_policy(module, recurse, nonwrapped_numel)
+    
+    return sp_aware_policy
+
 
 def main():
     args = parse_args()
     
-    # Enable sequence parallelism by default for multi-GPU setups
-    args.sequence_parallel = torch.cuda.device_count() > 1 and not args.disable_sequence_parallel
+    # Require multi-GPU setup for SP+FSDP hybrid training
+    if torch.cuda.device_count() < 2:
+        raise RuntimeError(f"SP+FSDP hybrid training requires at least 2 GPUs, found {torch.cuda.device_count()}")
     
-    # Enable FSDP by default for multi-GPU setups (can be combined with sequence parallelism)
-    args.use_fsdp = torch.cuda.device_count() > 1 and not args.disable_fsdp
+    print(f"🚀 SP+FSDP hybrid training enabled for {torch.cuda.device_count()} GPUs")
+    print("   → SP handles normalization layers across sequence dimension")
+    print("   → FSDP provides parameter sharding with custom auto_wrap_policy")
     
-    if args.sequence_parallel and args.use_fsdp:
-        print(f"🚀 Sequence parallelism + FSDP enabled for {torch.cuda.device_count()} GPUs (hybrid approach)")
-        print("   → SP handles long sequences by distributing across sequence dimension")
-        print("   → FSDP provides parameter sharding for memory efficiency")
-    elif args.sequence_parallel:
-        print(f"🚀 Sequence parallelism enabled for {torch.cuda.device_count()} GPUs")
-        print("   → Pure SP mode: distributing sequence processing across GPUs")
-    elif args.use_fsdp:
-        print(f"🚀 FSDP enabled for {torch.cuda.device_count()} GPUs")
-        print("   → Parameter sharding without sequence parallelism")
-    else:
-        print("🔧 Single GPU or distributed training disabled")
-    
-    if torch.cuda.device_count() > 1:
-        if not dist.is_initialized():
-            # Initialize with longer timeout to handle evaluation delays
-            dist.init_process_group(
-                backend="nccl", 
-                timeout=datetime.timedelta(seconds=3600)  # 1 hour timeout
-            )
-        # Set the device for this process
-        if "LOCAL_RANK" in os.environ:
-            torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    # Initialize distributed training
+    if not dist.is_initialized():
+        dist.init_process_group(
+            backend="nccl", 
+            timeout=datetime.timedelta(seconds=3600)  # 1 hour timeout
+        )
+    # Set the device for this process
+    if "LOCAL_RANK" in os.environ:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
     print_memory_usage()
 
@@ -278,41 +290,16 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
-    # Ensure padding side is left for causal LM training
     tokenizer.padding_side = "right"
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # Configure quantization for Q-LoRA (only for single GPU)
-    use_quantization = torch.cuda.device_count() == 1
-    bnb_config = None
-    
-    if use_quantization:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
-            bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
-        )
-        print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
-    elif args.sequence_parallel and args.use_fsdp:
-        print("Using sequence parallelism + FSDP (quantization disabled for compatibility)")
-    elif args.sequence_parallel:
-        print("Using sequence parallelism (quantization disabled for compatibility)")
-    elif args.use_fsdp:
-        print("Using FSDP (quantization disabled for compatibility)")
-    else:
-        print("Using full precision LoRA")
-
-    # Load the base model with FSDP-compatible settings
+    # Load the base model for SP+FSDP hybrid training
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
         device_map=None,
         trust_remote_code=True,
-        quantization_config=bnb_config,
         attn_implementation="sdpa",
     )
     base_model.config.use_cache = False
@@ -328,107 +315,65 @@ def main():
     )
     model = get_peft_model(base_model, peft_cfg)
     
-    # Initialize sequence parallelism if requested and multi-GPU available
-    if args.sequence_parallel and torch.cuda.device_count() > 1:
-        try:
-            print(f"Initializing sequence parallelism with {torch.cuda.device_count()} GPUs...")
-            
-            # Create device mesh across all GPUs for tensor parallelism
-            tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-            print(f"Device mesh created: {tp_mesh}")
-            
-            # Get the underlying model from PEFT wrapper
-            base_model = model.get_base_model()
-            
-            # Build comprehensive parallelization plan for all normalization layers
-            parallelize_plan = {}
-            
-            # Use named_modules() to find all normalization layers across the entire model
-            for name, module in base_model.named_modules():
-                # Method 1: Match by name patterns (works for LLaMA RMSNorm)
-                name_match = any(norm_pattern in name.lower() for norm_pattern in [
-                    "layer_norm",      # matches input_layer_norm, post_attention_layer_norm, etc.
-                    "layernorm", 
-                    "rms_norm",
-                    "rmsnorm"
-                ]) or (name.lower() == "norm" or name.endswith(".norm"))  # final norm layer
-                
-                # Method 2: Match by module type (fallback for any normalization layer)
-                type_match = False
-                module_type_name = type(module).__name__.lower()
-                if any(norm_type in module_type_name for norm_type in ['norm', 'layernorm', 'rmsnorm']):
-                    type_match = True
-                
-                if name_match or type_match:
-                    # Apply layer limit if specified
-                    if args.sp_layers_limit is not None:
-                        # Extract layer number from path like "model.layers.5.input_layer_norm"
-                        if "layers." in name:
-                            try:
-                                layer_num = int(name.split("layers.")[1].split(".")[0])
-                                if layer_num >= args.sp_layers_limit:
-                                    continue  # Skip layers beyond limit
-                            except (ValueError, IndexError):
-                                pass  # If we can't parse layer number, include it anyway
-                    
-                    parallelize_plan[name] = SequenceParallel()
-            
-            if args.sp_layers_limit is not None:
-                print(f"Layer limit applied: only processing first {args.sp_layers_limit} layers")
-            
-            print(f"Total normalization layers found: {len(parallelize_plan)}")
-            if parallelize_plan:
-                print(f"Applying sequence parallelism to {len(parallelize_plan)} normalization layers")
-                
-                # Apply sequence parallelism to the entire base model with comprehensive plan
-                parallelize_module(
-                    module=base_model,
-                    device_mesh=tp_mesh,
-                    parallelize_plan=parallelize_plan
-                )
-                print("✅ Sequence parallelism applied successfully to all normalization layers")
-                
-                # Log memory usage after SP setup
-                print_memory_usage()
-                
-            else:
-                print("No normalization layers found for sequence parallelism, skipping")
-                args.sequence_parallel = False
-                
-        except Exception as e:
-            print(f"Warning: Failed to initialize sequence parallelism: {e}")
-            print("Falling back to standard multi-GPU training (FSDP)")
-            args.sequence_parallel = False
+    # Initialize sequence parallelism
+    print(f"Initializing sequence parallelism with {torch.cuda.device_count()} GPUs...")
     
-    if torch.cuda.device_count() > 1 and args.use_fsdp:
-        # Make sure all LoRA parameters require gradients (FSDP mode)
-        for name, param in model.named_parameters():
-            if 'lora_' in name:
-                param.requires_grad_(True)
-        
-        # Ensure the model is in training mode
-        model.train()
-        
-        # Print trainable parameters for debugging
-        trainable_params = []
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                trainable_params.append(name)
-        print(f"Trainable parameters: {len(trainable_params)}")
-        print(f"First few trainable params: {trainable_params[:5]}")
-        
-        if args.sequence_parallel:
-            print("Model configured for sequence parallelism + FSDP hybrid approach")
-        else:
-            print("Model configured for FSDP only")
-    elif args.sequence_parallel and torch.cuda.device_count() > 1:
-        # Sequence parallelism only mode
-        model.train()
-        print("Model configured for sequence parallelism only")
-    else:
-        # Single GPU - just ensure training mode
-        model.train()
+    # Create device mesh across all GPUs for tensor parallelism
+    tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+    print(f"Device mesh created: {tp_mesh}")
     
+    # Get the underlying model from PEFT wrapper
+    base_model = model.get_base_model()
+    
+    # Build parallelization plan for all normalization layers
+    parallelize_plan = {}
+    
+    # Clear the global tracker for SP-modified modules
+    global _sp_modified_modules
+    _sp_modified_modules.clear()
+    
+    # Find all normalization layers across the entire model
+    for name, module in base_model.named_modules():
+        # Match by name patterns (works for LLaMA RMSNorm)
+        name_match = any(norm_pattern in name.lower() for norm_pattern in [
+            "layer_norm", "layernorm", "rms_norm", "rmsnorm"
+        ]) or (name.lower() == "norm" or name.endswith(".norm"))
+        
+        # Match by module type (fallback for any normalization layer)
+        type_match = False
+        module_type_name = type(module).__name__.lower()
+        if any(norm_type in module_type_name for norm_type in ['norm', 'layernorm', 'rmsnorm']):
+            type_match = True
+        
+        if name_match or type_match:
+            parallelize_plan[name] = SequenceParallel()
+            # Track this module for FSDP exclusion
+            _sp_modified_modules.add(module)
+    
+    print(f"Found {len(parallelize_plan)} normalization layers for SP")
+    if not parallelize_plan:
+        raise RuntimeError("No normalization layers found for sequence parallelism")
+    
+    # Apply sequence parallelism to the base model
+    parallelize_module(
+        module=base_model,
+        device_mesh=tp_mesh,
+        parallelize_plan=parallelize_plan
+    )
+    print("✅ Sequence parallelism applied successfully")
+    print(f"📋 Tracked {len(_sp_modified_modules)} SP-modified modules for FSDP exclusion")
+    print_memory_usage()
+    
+    # Ensure all LoRA parameters require gradients for FSDP
+    for name, param in model.named_parameters():
+        if 'lora_' in name:
+            param.requires_grad_(True)
+    
+    model.train()
+    
+    # Print trainable parameters for debugging
+    trainable_params = [name for name, param in model.named_parameters() if param.requires_grad]
+    print(f"Trainable parameters: {len(trainable_params)}")
     print(f"Model has {model.num_parameters():,} total parameters")
     print(f"Model has {model.num_parameters(only_trainable=True):,} trainable parameters")
 
@@ -439,6 +384,13 @@ def main():
         mlm=False,
         return_tensors="pt"
     )
+
+    # Configure FSDP with SP-aware auto_wrap_policy
+    print(f"🔧 Using SP-aware FSDP auto_wrap_policy to exclude {len(_sp_modified_modules)} SP-modified modules")
+    fsdp_config = {
+        "use_orig_params": "true",
+        "auto_wrap_policy": create_sp_aware_fsdp_policy(min_num_params=1e8)
+    }
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -460,11 +412,9 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        # Enable FSDP when requested (can be combined with sequence parallelism)
-        fsdp="full_shard" if args.use_fsdp else "",
-        fsdp_config={
-            "use_orig_params": "true",
-        } if args.use_fsdp else {},
+        # Always use FSDP for SP+FSDP hybrid training
+        fsdp="full_shard",
+        fsdp_config=fsdp_config,
         ddp_find_unused_parameters=False,
     )
 
@@ -476,23 +426,18 @@ def main():
         data_collator=data_collator,
         callbacks=[MemoryLoggerCallback(), AverageTrainLossCallback(), PerformanceLoggerCallback()],
     )
+    
     # Debug: Check gradient setup after trainer initialization
-    if torch.cuda.device_count() > 1 and args.use_fsdp:
-        mode_desc = "FSDP + Sequence Parallel" if args.sequence_parallel else "FSDP only"
-        print(f"Post-trainer initialization gradient check ({mode_desc} mode):")
-        grad_params = 0
-        total_params = 0
-        for name, param in trainer.model.named_parameters():
-            total_params += 1
-            if param.requires_grad:
-                grad_params += 1
-                if grad_params <= 3:  # Print first few
-                    print(f"  {name}: requires_grad={param.requires_grad}, dtype={param.dtype}")
-        print(f"  Total: {grad_params}/{total_params} parameters require gradients")
-    elif args.sequence_parallel and torch.cuda.device_count() > 1:
-        print("Post-trainer initialization check (Sequence Parallel only mode):")
-        print(f"  Model type: {type(trainer.model)}")
-        print(f"  Device count: {torch.cuda.device_count()}")
+    print("Post-trainer initialization gradient check (SP+FSDP hybrid mode):")
+    grad_params = 0
+    total_params = 0
+    for name, param in trainer.model.named_parameters():
+        total_params += 1
+        if param.requires_grad:
+            grad_params += 1
+            if grad_params <= 3:  # Print first few
+                print(f"  {name}: requires_grad={param.requires_grad}, dtype={param.dtype}")
+    print(f"  Total: {grad_params}/{total_params} parameters require gradients")
     
     if args.resume:
         try:
