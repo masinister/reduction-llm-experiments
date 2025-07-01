@@ -31,6 +31,11 @@ from transformers import (
     TrainerCallback,
     BitsAndBytesConfig,
 )
+try:
+    # Try to import LlamaRMSNorm for type checking (optional)
+    from transformers.models.llama.modeling_llama import LlamaRMSNorm
+except ImportError:
+    LlamaRMSNorm = None
 from peft import get_peft_model, LoraConfig, TaskType
 from huggingface_hub import snapshot_download
 
@@ -370,35 +375,83 @@ def main():
             # Get the underlying model from PEFT wrapper
             base_model = model.get_base_model()
             
+            # Debug: Print model structure to understand layer names
+            print("🔍 Model structure analysis:")
+            print(f"Base model type: {type(base_model).__name__}")
+            print("Top-level modules:")
+            for name, module in base_model.named_children():
+                print(f"  {name}: {type(module).__name__}")
+                if hasattr(module, '__len__') and len(module) > 0:
+                    print(f"    (contains {len(module)} sub-modules)")
+                    # Show first few sub-modules
+                    if hasattr(module, '__iter__'):
+                        for i, sub_module in enumerate(module):
+                            if i < 2:  # Show first 2
+                                print(f"      [{i}]: {type(sub_module).__name__}")
+                                for sub_name, sub_sub_module in sub_module.named_children():
+                                    print(f"        {sub_name}: {type(sub_sub_module).__name__}")
+                            elif i == 2:
+                                print(f"      ... and {len(module) - 2} more layers")
+                                break
+            
             # Build comprehensive parallelization plan for all normalization layers
             parallelize_plan = {}
             
-            # Find all transformer layers and their normalization sublayers
-            for name, module in base_model.named_children():
-                if any(layer_name in name.lower() for layer_name in ['layers', 'h', 'transformer', 'blocks']):
-                    if hasattr(module, '__iter__'):  # It's a ModuleList/sequence of layers
-                        layers_to_process = module
-                        if args.sp_layers_limit is not None:
-                            layers_to_process = module[:args.sp_layers_limit]
-                            print(f"Limiting SP to first {args.sp_layers_limit} layers for testing")
-                        
-                        for i, layer in enumerate(layers_to_process):
-                            # Add normalization layers from each transformer block
-                            for child_name, child_module in layer.named_children():
-                                if any(norm_type in child_name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
-                                    full_path = f"{name}.{i}.{child_name}"
-                                    parallelize_plan[full_path] = SequenceParallel()
-                    else:
-                        # Single transformer block
-                        for child_name, child_module in module.named_children():
-                            if any(norm_type in child_name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
-                                full_path = f"{name}.{child_name}"
-                                parallelize_plan[full_path] = SequenceParallel()
-            
-            # Also check for top-level normalization layers (e.g., final layer norm)
-            for name, module in base_model.named_children():
-                if any(norm_type in name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
+            # Use named_modules() to find all normalization layers across the entire model
+            print("🔍 Scanning for normalization layers...")
+            for name, module in base_model.named_modules():
+                # Method 1: Match by name patterns (works for LLaMA RMSNorm)
+                name_match = any(norm_pattern in name.lower() for norm_pattern in [
+                    "layer_norm",      # matches input_layer_norm, post_attention_layer_norm, etc.
+                    "layernorm", 
+                    "rms_norm",
+                    "rmsnorm"
+                ]) or (name.lower() == "norm" or name.endswith(".norm"))  # final norm layer
+                
+                # Method 2: Match by module type (fallback for any normalization layer)
+                type_match = False
+                module_type_name = type(module).__name__.lower()
+                if any(norm_type in module_type_name for norm_type in ['norm', 'layernorm', 'rmsnorm']):
+                    type_match = True
+                
+                if name_match or type_match:
+                    # Apply layer limit if specified
+                    if args.sp_layers_limit is not None:
+                        # Extract layer number from path like "model.layers.5.input_layer_norm"
+                        if "layers." in name:
+                            try:
+                                layer_num = int(name.split("layers.")[1].split(".")[0])
+                                if layer_num >= args.sp_layers_limit:
+                                    continue  # Skip layers beyond limit
+                            except (ValueError, IndexError):
+                                pass  # If we can't parse layer number, include it anyway
+                    
                     parallelize_plan[name] = SequenceParallel()
+                    match_reason = "name" if name_match else "type"
+                    print(f"  Added to SP plan ({match_reason}): {name} ({type(module).__name__})")
+            
+            if args.sp_layers_limit is not None:
+                print(f"Layer limit applied: only processing first {args.sp_layers_limit} layers")
+            
+            print(f"Total normalization layers found: {len(parallelize_plan)}")
+            
+            # Also show what the actual model structure looks like for debugging
+            print("\n🔍 Model structure verification:")
+            print(f"Base model type: {type(base_model).__name__}")
+            for name, module in base_model.named_children():
+                print(f"  {name}: {type(module).__name__}")
+                if hasattr(module, '__len__') and len(module) > 0:
+                    print(f"    (contains {len(module)} sub-modules)")
+                    if hasattr(module, '__iter__') and name.lower() in ['layers', 'h', 'blocks']:
+                        # Show structure of first transformer layer
+                        if len(module) > 0:
+                            first_layer = module[0]
+                            print(f"    First layer structure:")
+                            for child_name, child_module in first_layer.named_children():
+                                print(f"      {child_name}: {type(child_module).__name__}")
+                                if "norm" in child_name.lower():
+                                    print(f"        ^ This is a normalization layer!")
+            print()
             
             if parallelize_plan:
                 print(f"Applying sequence parallelism to {len(parallelize_plan)} normalization layers")
