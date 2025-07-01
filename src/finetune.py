@@ -236,41 +236,6 @@ def load_and_prepare(args, tokenizer):
     return tokenized_splits
 
 
-def validate_sp_setup(model, tokenizer, args):
-    """
-    Validate sequence parallelism setup by running a small forward pass
-    and checking for any DTensor-related issues.
-    """
-    if not args.sequence_parallel:
-        return True
-        
-    try:
-        print("🔍 Validating sequence parallelism setup...")
-        model.eval()
-        
-        # Create a small test input
-        test_input = tokenizer("Test sequence for SP validation", 
-                             return_tensors="pt", 
-                             max_length=64, 
-                             padding="max_length", 
-                             truncation=True)
-        
-        if torch.cuda.is_available():
-            test_input = {k: v.cuda() for k, v in test_input.items()}
-        
-        with torch.no_grad():
-            # Run forward pass to validate SP setup
-            output = model(**test_input)
-            print("✅ SP validation forward pass successful")
-            
-        model.train()
-        return True
-        
-    except Exception as e:
-        print(f"❌ SP validation failed: {e}")
-        return False
-
-
 def main():
     args = parse_args()
     
@@ -375,30 +340,10 @@ def main():
             # Get the underlying model from PEFT wrapper
             base_model = model.get_base_model()
             
-            # Debug: Print model structure to understand layer names
-            print("🔍 Model structure analysis:")
-            print(f"Base model type: {type(base_model).__name__}")
-            print("Top-level modules:")
-            for name, module in base_model.named_children():
-                print(f"  {name}: {type(module).__name__}")
-                if hasattr(module, '__len__') and len(module) > 0:
-                    print(f"    (contains {len(module)} sub-modules)")
-                    # Show first few sub-modules
-                    if hasattr(module, '__iter__'):
-                        for i, sub_module in enumerate(module):
-                            if i < 2:  # Show first 2
-                                print(f"      [{i}]: {type(sub_module).__name__}")
-                                for sub_name, sub_sub_module in sub_module.named_children():
-                                    print(f"        {sub_name}: {type(sub_sub_module).__name__}")
-                            elif i == 2:
-                                print(f"      ... and {len(module) - 2} more layers")
-                                break
-            
             # Build comprehensive parallelization plan for all normalization layers
             parallelize_plan = {}
             
             # Use named_modules() to find all normalization layers across the entire model
-            print("🔍 Scanning for normalization layers...")
             for name, module in base_model.named_modules():
                 # Method 1: Match by name patterns (works for LLaMA RMSNorm)
                 name_match = any(norm_pattern in name.lower() for norm_pattern in [
@@ -427,35 +372,13 @@ def main():
                                 pass  # If we can't parse layer number, include it anyway
                     
                     parallelize_plan[name] = SequenceParallel()
-                    match_reason = "name" if name_match else "type"
-                    print(f"  Added to SP plan ({match_reason}): {name} ({type(module).__name__})")
             
             if args.sp_layers_limit is not None:
                 print(f"Layer limit applied: only processing first {args.sp_layers_limit} layers")
             
             print(f"Total normalization layers found: {len(parallelize_plan)}")
-            
-            # Also show what the actual model structure looks like for debugging
-            print("\n🔍 Model structure verification:")
-            print(f"Base model type: {type(base_model).__name__}")
-            for name, module in base_model.named_children():
-                print(f"  {name}: {type(module).__name__}")
-                if hasattr(module, '__len__') and len(module) > 0:
-                    print(f"    (contains {len(module)} sub-modules)")
-                    if hasattr(module, '__iter__') and name.lower() in ['layers', 'h', 'blocks']:
-                        # Show structure of first transformer layer
-                        if len(module) > 0:
-                            first_layer = module[0]
-                            print(f"    First layer structure:")
-                            for child_name, child_module in first_layer.named_children():
-                                print(f"      {child_name}: {type(child_module).__name__}")
-                                if "norm" in child_name.lower():
-                                    print(f"        ^ This is a normalization layer!")
-            print()
-            
             if parallelize_plan:
                 print(f"Applying sequence parallelism to {len(parallelize_plan)} normalization layers")
-                print(f"SP plan covers layers: {list(parallelize_plan.keys())[:5]}{'...' if len(parallelize_plan) > 5 else ''}")
                 
                 # Apply sequence parallelism to the entire base model with comprehensive plan
                 parallelize_module(
@@ -467,11 +390,6 @@ def main():
                 
                 # Log memory usage after SP setup
                 print_memory_usage()
-                
-                # Validate SP setup with a test forward pass
-                if not validate_sp_setup(model, tokenizer, args):
-                    print("⚠️ SP validation failed, disabling sequence parallelism")
-                    args.sequence_parallel = False
                 
             else:
                 print("No normalization layers found for sequence parallelism, skipping")
@@ -575,13 +493,6 @@ def main():
         print("Post-trainer initialization check (Sequence Parallel only mode):")
         print(f"  Model type: {type(trainer.model)}")
         print(f"  Device count: {torch.cuda.device_count()}")
-    
-    # Validate sequence parallelism setup
-    if args.sequence_parallel:
-        sp_valid = validate_sp_setup(model, tokenizer, args)
-        if not sp_valid:
-            print("Sequence parallelism setup validation failed, disabling sequence parallelism")
-            args.sequence_parallel = False
     
     if args.resume:
         try:
