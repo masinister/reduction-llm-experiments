@@ -395,7 +395,6 @@ def main():
         
         # Convert parameters to target dtype if needed
         if param.dtype != target_dtype:
-            print(f"   Converting parameter {name} from {param.dtype} to {target_dtype}")
             param.data = param.data.to(target_dtype)
     
     # Check and convert buffers (but be careful with certain buffer types)
@@ -406,7 +405,6 @@ def main():
         
         # Only convert floating point buffers, skip integer/bool buffers
         if buffer.dtype.is_floating_point and buffer.dtype != target_dtype:
-            print(f"   Converting buffer {name} from {buffer.dtype} to {target_dtype}")
             buffer.data = buffer.data.to(target_dtype)
     
     print(f"   Parameter dtype distribution: {param_dtype_counts}")
