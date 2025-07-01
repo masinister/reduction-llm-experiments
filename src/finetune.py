@@ -217,22 +217,20 @@ def main():
     )
     
     # Load the base model with QLoRA quantization enabled
-    # Use device_map="auto" for DDP + 4-bit compatibility
+    # CRITICAL: Load on CPU first to avoid DTensor issues with PEFT
+    # device_map="auto" creates DTensors that break PEFT's compress_statistics
     model_kwargs = {
         "torch_dtype": dtype_map[args.model_dtype],
-        "device_map": "auto",
+        "device_map": {"": "cpu"},  # Load entirely on CPU first
         "trust_remote_code": True,
         "quantization_config": bnb_config,
         "attn_implementation": "sdpa",
     }
     
-    # Add CPU offload if requested
-    if args.cpu_offload:
-        model_kwargs.update({
-            "offload_folder": "offload",
-            "offload_state_dict": True,
-        })
+    # Note: CPU offload not needed since we're loading on CPU initially
+    # DDP will handle GPU distribution after PEFT injection
     
+    print("Loading model on CPU to avoid DTensor issues with PEFT...")
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         **model_kwargs
@@ -246,6 +244,8 @@ def main():
     num_4bit = sum(1 for p in base_model.parameters() if p.dtype == torch.int8)
     print(f"Found {num_4bit} int8 layers (should be >0 for 4-bit quant).")
 
+    # Apply PEFT on CPU where we have real Linear4bit modules (not DTensor proxies)
+    print("Applying PEFT/LoRA on CPU...")
     peft_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -256,6 +256,9 @@ def main():
         modules_to_save=None,
     )
     model = get_peft_model(base_model, peft_cfg)
+    
+    # DDP will automatically move the model to GPUs during training
+    print("PEFT injection complete. DDP will handle GPU distribution.")
     
     if torch.cuda.device_count() > 1:
         print(f"Using DDP with {torch.cuda.device_count()} GPUs and 4-bit quantization")
