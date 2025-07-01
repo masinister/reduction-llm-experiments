@@ -304,7 +304,10 @@ def main():
         fp16=args.model_dtype == "float16",
         tf32=True,
         fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
-        fsdp_config={"use_orig_params": "true"} if torch.cuda.device_count() > 1 else {},
+        fsdp_config={
+            "use_orig_params": True,
+            "auto_wrap_policy": None,
+        } if torch.cuda.device_count() > 1 else {},
         ddp_find_unused_parameters=False,
     )
 
