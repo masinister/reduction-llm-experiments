@@ -303,12 +303,8 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        fsdp="full_shard auto_wrap" if torch.cuda.device_count() > 1 else "",
-        fsdp_config={
-            "use_orig_params": "true",
-            "backward_prefetch": "backward_pre",
-            "forward_prefetch": "false",
-        } if torch.cuda.device_count() > 1 else {},
+        fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
+        fsdp_config={"use_orig_params": "true"} if torch.cuda.device_count() > 1 else {},
         ddp_find_unused_parameters=False,
     )
 
