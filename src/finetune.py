@@ -225,11 +225,6 @@ def main():
         bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
     )
     
-    if torch.cuda.device_count() > 1:
-        print("Using Q-LoRA with 4-bit quantization (multi-GPU FSDP mode)")
-    else:
-        print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
-
     # Load the base model with QLoRA quantization enabled
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
@@ -303,11 +298,6 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
-        fsdp_config={
-            "use_orig_params": True,
-            "auto_wrap_policy": None,
-        } if torch.cuda.device_count() > 1 else {},
         ddp_find_unused_parameters=False,
     )
 

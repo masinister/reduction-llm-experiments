@@ -134,26 +134,28 @@ echo "Environment configured for FSDP fine-tuning."
 # Training command
 echo ""
 echo "🚀 Starting training..."
-torchrun \
-  --nproc_per_node=4 \
-  --nnodes=1 \
-  --master_port=$MASTER_PORT \
+accelerate launch \
+  --num_processes 4 \
+  --fsdp full_shard \
+  --fsdp_auto_wrap_policy no_wrap \
+  --fsdp_use_orig_params True \
+  --fsdp_backwards_prefetch backward_pre \
   src/finetune.py \
-  --model_name "$MODEL_NAME" \
-  --csv_path "$CSV_PATH" \
-  --output_dir "$OUTPUT_DIR" \
-  --per_device_train_batch_size "$BATCH_SIZE" \
-  --per_device_eval_batch_size "$BATCH_SIZE" \
-  --gradient_accumulation_steps "$GRAD_ACCUM" \
-  --learning_rate "$LEARNING_RATE" \
-  --num_train_epochs "$EPOCHS" \
-  --lora_r "$LORA_R" \
-  --lora_alpha "$LORA_ALPHA" \
-  --lora_dropout "$LORA_DROPOUT" \
-  --max_length "$MAX_LENGTH" \
-  --model_dtype bfloat16 \
-  --cpu_offload \
-  $COT_FLAG
+    --model_name "$MODEL_NAME" \
+    --csv_path "$CSV_PATH" \
+    --output_dir "$OUTPUT_DIR" \
+    --per_device_train_batch_size "$BATCH_SIZE" \
+    --per_device_eval_batch_size "$BATCH_SIZE" \
+    --gradient_accumulation_steps "$GRAD_ACCUM" \
+    --learning_rate "$LEARNING_RATE" \
+    --num_train_epochs "$EPOCHS" \
+    --lora_r "$LORA_R" \
+    --lora_alpha "$LORA_ALPHA" \
+    --lora_dropout "$LORA_DROPOUT" \
+    --max_length "$MAX_LENGTH" \
+    --model_dtype bfloat16 \
+    --cpu_offload \
+    $COT_FLAG
 
 echo ""
 echo "✅ Fine-tuning completed at $(date)"
