@@ -216,23 +216,21 @@ def main():
 
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
-    # Configure quantization for Q-LoRA (only for single GPU to avoid FSDP conflicts)
-    use_quantization = torch.cuda.device_count() == 1
-    bnb_config = None
+    # Configure quantization for Q-LoRA (now enabled for multi-GPU)
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
+        bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
+    )
     
-    if use_quantization:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=dtype_map[args.model_dtype],
-            bnb_4bit_storage_dtype=dtype_map[args.model_dtype],
-        )
-        print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
+    if torch.cuda.device_count() > 1:
+        print("Using Q-LoRA with 4-bit quantization (multi-GPU FSDP mode)")
     else:
-        print("Using full precision LoRA (multi-GPU FSDP mode - quantization disabled)")
+        print("Using Q-LoRA with 4-bit quantization (single GPU mode)")
 
-    # Load the base model with FSDP-compatible settings
+    # Load the base model with QLoRA quantization enabled
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=dtype_map[args.model_dtype],
@@ -305,9 +303,11 @@ def main():
         bf16=args.model_dtype == "bfloat16",
         fp16=args.model_dtype == "float16",
         tf32=True,
-        fsdp="full_shard" if torch.cuda.device_count() > 1 else "",
+        fsdp="full_shard auto_wrap" if torch.cuda.device_count() > 1 else "",
         fsdp_config={
             "use_orig_params": "true",
+            "backward_prefetch": "backward_pre",
+            "forward_prefetch": "false",
         } if torch.cuda.device_count() > 1 else {},
         ddp_find_unused_parameters=False,
     )
