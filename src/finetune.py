@@ -15,6 +15,7 @@ import argparse
 import json
 import datetime
 import random
+import time
 
 import torch
 import torch.distributed as dist
@@ -62,6 +63,32 @@ class AverageTrainLossCallback(TrainerCallback):
             self.current_epoch_losses = []
 
 
+class PerformanceLoggerCallback(TrainerCallback):
+    def __init__(self):
+        super().__init__()
+        self.step_times = []
+        self.step_start_time = None
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        self.step_start_time = time.time()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.step_start_time is not None:
+            step_time = time.time() - self.step_start_time
+            self.step_times.append(step_time)
+            
+            # Log every 50 steps and provide running average
+            if len(self.step_times) % 50 == 0:
+                avg_time = sum(self.step_times[-50:]) / 50
+                print(f"Average step time (last 50 steps): {avg_time:.3f}s")
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if self.step_times:
+            avg_time = sum(self.step_times) / len(self.step_times)
+            print(f"Average step time this epoch: {avg_time:.3f}s")
+            self.step_times = []
+
+
 def print_memory_usage():
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
@@ -91,6 +118,7 @@ def parse_args():
     p.add_argument("--cot", action="store_true", help="Use chain-of-thought data format")
     p.add_argument("--disable_sequence_parallel", action="store_true", help="Disable sequence parallelism")
     p.add_argument("--disable_fsdp", action="store_true", help="Disable FSDP (useful for debugging)")
+    p.add_argument("--sp_layers_limit", type=int, default=None, help="Limit SP to first N transformer layers (for testing)")
     return p.parse_args()
 
 def load_and_prepare(args, tokenizer):
@@ -203,6 +231,41 @@ def load_and_prepare(args, tokenizer):
     return tokenized_splits
 
 
+def validate_sp_setup(model, tokenizer, args):
+    """
+    Validate sequence parallelism setup by running a small forward pass
+    and checking for any DTensor-related issues.
+    """
+    if not args.sequence_parallel:
+        return True
+        
+    try:
+        print("🔍 Validating sequence parallelism setup...")
+        model.eval()
+        
+        # Create a small test input
+        test_input = tokenizer("Test sequence for SP validation", 
+                             return_tensors="pt", 
+                             max_length=64, 
+                             padding="max_length", 
+                             truncation=True)
+        
+        if torch.cuda.is_available():
+            test_input = {k: v.cuda() for k, v in test_input.items()}
+        
+        with torch.no_grad():
+            # Run forward pass to validate SP setup
+            output = model(**test_input)
+            print("✅ SP validation forward pass successful")
+            
+        model.train()
+        return True
+        
+    except Exception as e:
+        print(f"❌ SP validation failed: {e}")
+        return False
+
+
 def main():
     args = parse_args()
     
@@ -213,13 +276,17 @@ def main():
     args.use_fsdp = torch.cuda.device_count() > 1 and not args.disable_fsdp
     
     if args.sequence_parallel and args.use_fsdp:
-        print(f"Sequence parallelism + FSDP enabled for {torch.cuda.device_count()} GPUs (hybrid approach)")
+        print(f"🚀 Sequence parallelism + FSDP enabled for {torch.cuda.device_count()} GPUs (hybrid approach)")
+        print("   → SP handles long sequences by distributing across sequence dimension")
+        print("   → FSDP provides parameter sharding for memory efficiency")
     elif args.sequence_parallel:
-        print(f"Sequence parallelism enabled for {torch.cuda.device_count()} GPUs")
+        print(f"🚀 Sequence parallelism enabled for {torch.cuda.device_count()} GPUs")
+        print("   → Pure SP mode: distributing sequence processing across GPUs")
     elif args.use_fsdp:
-        print(f"FSDP enabled for {torch.cuda.device_count()} GPUs")
+        print(f"🚀 FSDP enabled for {torch.cuda.device_count()} GPUs")
+        print("   → Parameter sharding without sequence parallelism")
     else:
-        print("Single GPU or distributed training disabled")
+        print("🔧 Single GPU or distributed training disabled")
     
     if torch.cuda.device_count() > 1:
         if not dist.is_initialized():
@@ -300,31 +367,63 @@ def main():
             tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
             print(f"Device mesh created: {tp_mesh}")
             
-            # Create parallelization plan for LoRA layers
-            # We'll apply sequence parallelism to layer norms and attention/MLP blocks
+            # Get the underlying model from PEFT wrapper
+            base_model = model.get_base_model()
+            
+            # Build comprehensive parallelization plan for all normalization layers
             parallelize_plan = {}
             
-            # For models with standard transformer architecture, apply sequence parallelism
-            # to common layer types that benefit from it
-            for name, module in model.named_modules():
-                if any(layer_type in name.lower() for layer_type in ['layernorm', 'layer_norm', 'norm']):
+            # Find all transformer layers and their normalization sublayers
+            for name, module in base_model.named_children():
+                if any(layer_name in name.lower() for layer_name in ['layers', 'h', 'transformer', 'blocks']):
+                    if hasattr(module, '__iter__'):  # It's a ModuleList/sequence of layers
+                        layers_to_process = module
+                        if args.sp_layers_limit is not None:
+                            layers_to_process = module[:args.sp_layers_limit]
+                            print(f"Limiting SP to first {args.sp_layers_limit} layers for testing")
+                        
+                        for i, layer in enumerate(layers_to_process):
+                            # Add normalization layers from each transformer block
+                            for child_name, child_module in layer.named_children():
+                                if any(norm_type in child_name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
+                                    full_path = f"{name}.{i}.{child_name}"
+                                    parallelize_plan[full_path] = SequenceParallel()
+                    else:
+                        # Single transformer block
+                        for child_name, child_module in module.named_children():
+                            if any(norm_type in child_name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
+                                full_path = f"{name}.{child_name}"
+                                parallelize_plan[full_path] = SequenceParallel()
+            
+            # Also check for top-level normalization layers (e.g., final layer norm)
+            for name, module in base_model.named_children():
+                if any(norm_type in name.lower() for norm_type in ['norm', 'layernorm', 'layer_norm']):
                     parallelize_plan[name] = SequenceParallel()
-                elif any(layer_type in name.lower() for layer_type in ['attention', 'self_attn']):
-                    # For attention modules, we can use sequence parallel on the input
-                    if 'lora_' not in name:  # Don't parallelize LoRA adapters themselves
-                        parallelize_plan[name] = SequenceParallel()
             
             if parallelize_plan:
-                print(f"Applying sequence parallelism to {len(parallelize_plan)} modules")
-                model = parallelize_module(
-                    module=model,
+                print(f"Applying sequence parallelism to {len(parallelize_plan)} normalization layers")
+                print(f"SP plan covers layers: {list(parallelize_plan.keys())[:5]}{'...' if len(parallelize_plan) > 5 else ''}")
+                
+                # Apply sequence parallelism to the entire base model with comprehensive plan
+                parallelize_module(
+                    module=base_model,
                     device_mesh=tp_mesh,
                     parallelize_plan=parallelize_plan
                 )
-                print("Model wrapped with SequenceParallel")
+                print("✅ Sequence parallelism applied successfully to all normalization layers")
+                
+                # Log memory usage after SP setup
+                print_memory_usage()
+                
+                # Validate SP setup with a test forward pass
+                if not validate_sp_setup(model, tokenizer, args):
+                    print("⚠️ SP validation failed, disabling sequence parallelism")
+                    args.sequence_parallel = False
+                
             else:
-                print("No suitable modules found for sequence parallelism, skipping")
+                print("No normalization layers found for sequence parallelism, skipping")
                 args.sequence_parallel = False
+                
         except Exception as e:
             print(f"Warning: Failed to initialize sequence parallelism: {e}")
             print("Falling back to standard multi-GPU training (FSDP)")
@@ -404,7 +503,7 @@ def main():
         train_dataset=tokenized_ds["train"],
         eval_dataset=tokenized_ds["validation"],
         data_collator=data_collator,
-        callbacks=[MemoryLoggerCallback(), AverageTrainLossCallback()],
+        callbacks=[MemoryLoggerCallback(), AverageTrainLossCallback(), PerformanceLoggerCallback()],
     )
     # Debug: Check gradient setup after trainer initialization
     if torch.cuda.device_count() > 1 and args.use_fsdp:
@@ -423,6 +522,13 @@ def main():
         print("Post-trainer initialization check (Sequence Parallel only mode):")
         print(f"  Model type: {type(trainer.model)}")
         print(f"  Device count: {torch.cuda.device_count()}")
+    
+    # Validate sequence parallelism setup
+    if args.sequence_parallel:
+        sp_valid = validate_sp_setup(model, tokenizer, args)
+        if not sp_valid:
+            print("Sequence parallelism setup validation failed, disabling sequence parallelism")
+            args.sequence_parallel = False
     
     if args.resume:
         try:
