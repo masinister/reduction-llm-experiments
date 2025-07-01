@@ -152,7 +152,6 @@ torchrun \
   --lora_dropout "$LORA_DROPOUT" \
   --max_length "$MAX_LENGTH" \
   --model_dtype bfloat16 \
-  --cpu_offload \
   $COT_FLAG
 
 echo ""
