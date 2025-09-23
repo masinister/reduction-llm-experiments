@@ -1,3 +1,4 @@
-torch==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
-torchvision==0.21.0+cu126 --index-url https://download.pytorch.org/whl/cu126
-unsloth[cu126-ampere-torch260] @ git+https://github.com/unslothai/unsloth.git
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.8.0+cu126
+torchvision==0.15.2+cu126
+unsloth[cu126-ampere-torch280] @ git+https://github.com/unslothai/unsloth.git
