@@ -1,7 +1,7 @@
 # central config (sourced by scripts/*.sh)
 
 export MODULE_PYTHON="python/3.11.12"
-export MODULE_CUDA="cuda12.1/toolkit/12.1.1"
+export MODULE_CUDA="cuda12.6/toolkit/12.6.2"
 
 export VENV_PATH="$HOME/venvs/unsloth"
 export REQ_FILE="./requirements.txt"
