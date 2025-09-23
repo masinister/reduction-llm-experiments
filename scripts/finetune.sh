@@ -2,6 +2,7 @@
 #SBATCH --job-name=karp_finetune
 #SBATCH --partition=short
 #SBATCH --gres=gpu:1
+#SBATCH --constraint=A100|H100|H200
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
