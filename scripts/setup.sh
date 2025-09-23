@@ -14,7 +14,7 @@ set -euo pipefail
 source ./config.sh
 
 module load "${MODULE_PYTHON}"
-module load "${MODULE_CUDA}" 2>/dev/null || true
+module load "${MODULE_CUDA}"
 
 mkdir -p data models logs outputs
 
