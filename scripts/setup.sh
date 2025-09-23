@@ -24,5 +24,5 @@ python -m venv "${VENV_PATH}"
 source "${VENV_PATH}/bin/activate"
 pip install --upgrade pip
 pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
-pip install unsloth[cu126-ampere-torch280] @ git+https://github.com/unslothai/unsloth.git
+pip install "unsloth[cu126-ampere-torch280]@git+https://github.com/unslothai/unsloth.git"
 
