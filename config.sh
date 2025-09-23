@@ -1,28 +1,22 @@
-#!/bin/bash
+# central config (sourced by scripts/*.sh)
 
-# Model configuration
-MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
-JUDGE_MODEL="nvidia/Llama-3_3-Nemotron-Super-49B-v1"
+export MODULE_PYTHON="python/3.11.12/7vjddo3"
+export MODULE_CUDA="cuda/12.1/toolkit/12.1.1"
 
-# Data paths
-CSV_PATH="~/data/karp.csv"
+export VENV_PATH="$HOME/venvs/unsloth"
+export REQ_FILE="./requirements.txt"
 
-# Output directories
-OUTPUT_DIR="./llama_finetune"
-INFERENCE_OUTPUT="./inference_results"
-EVAL_OUTPUT="./evaluation_results"
+export TRAIN_CSV_PATH="./karp.csv"
+export TEST_CSV_PATH="./karp.csv"
+export MODEL_NAME="unsloth/Meta-Llama-3.1-8B-bnb-4bit"
 
-# Training parameters
-BATCH_SIZE=4
-GRAD_ACCUM=16
-LEARNING_RATE=1e-5
-EPOCHS=30
-MAX_LENGTH=4096
+export MODEL_DIR="./models/llama_4bit"
+export OUTPUT_DIR="./outputs"
 
-# LoRA parameters
-LORA_R=8
-LORA_ALPHA=16
-LORA_DROPOUT=0.1
+export MAX_SEQ="2048"
+export BATCH_SIZE="1"
+export GRAD_ACC="4"
+export EPOCHS="3"
+export LORA_R="16"
 
-# Evaluation parameters
-EVAL_MAX_LENGTH=4096
+export MAX_NEW_TOKENS="512"

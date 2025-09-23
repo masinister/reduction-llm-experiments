@@ -1,0 +1,16 @@
+python>=3.11,<3.13
+
+unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git
+
+torch>=2.4.0,<2.6.0
+transformers>=4.30.0,<4.40.0
+trl>=0.7.0
+datasets>=2.15.0
+accelerate>=0.22.0
+
+bitsandbytes>=0.45.0
+
+vllm>=0.5.0
+xformers>=0.0.20
+pylatexenc
+sympy
