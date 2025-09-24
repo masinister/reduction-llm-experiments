@@ -10,9 +10,9 @@ export TRAIN_CSV_PATH="data/karp.csv"
 export TEST_CSV_PATH="data/karp.csv"
 
 # Model paths (can be HuggingFace identifiers or local directories)
-export BASE_MODEL="unsloth/gpt-oss-20b-GGUF"  # Model to be fine-tuned
+export BASE_MODEL="unsloth/Qwen3-Next-80B-A3B-Instruct-bnb-4bit"  # Model to be fine-tuned
 export FINETUNED_MODEL="./models/finetuned_model"
-export INFERENCE_MODEL="unsloth/gpt-oss-20b-GGUF"
+export INFERENCE_MODEL="unsloth/Qwen3-Next-80B-A3B-Instruct-bnb-4bit"
 # export INFERENCE_MODEL="./models/finetuned_model"
 
 # Output directory for model inference content/results
