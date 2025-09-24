@@ -1,3 +1,4 @@
+import unsloth
 from unsloth.chat_templates import get_chat_template
 
 CHAT_TEMPLATE_NAME = "alpaca"

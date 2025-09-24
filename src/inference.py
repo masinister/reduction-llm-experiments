@@ -1,8 +1,9 @@
+import unsloth
+from unsloth import FastLanguageModel
 import argparse
 import os
 import torch
 from datasets import load_dataset
-from unsloth import FastLanguageModel
 from transformers import TextStreamer
 
 from prompts import setup_tokenizer_with_template, build_conversation_dict
