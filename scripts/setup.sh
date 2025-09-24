@@ -16,7 +16,7 @@ source ./config.sh
 module load "${MODULE_PYTHON}"
 module load "${MODULE_CUDA}"
 
-mkdir -p data models logs outputs
+mkdir -p data models logs "$(dirname "${FINETUNED_MODEL}")" "${INFERENCE_OUTPUT_DIR}"
 
 rm -rf "${VENV_PATH}"
 python -m venv "${VENV_PATH}"
@@ -24,6 +24,5 @@ python -m venv "${VENV_PATH}"
 source "${VENV_PATH}/bin/activate"
 pip install --upgrade pip
 pip install --upgrade build setuptools wheel
-pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
-pip install --no-build-isolation "unsloth[cu126-ampere-torch280]@git+https://github.com/unslothai/unsloth.git"
-
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu$(echo $CUDA_VERSION | tr -d .) 
+pip install unsloth

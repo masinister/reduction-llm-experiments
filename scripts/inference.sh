@@ -18,12 +18,11 @@ source ./config.sh
 module load "${MODULE_PYTHON}"
 module load "${MODULE_CUDA}"
 
-mkdir -p "${MODEL_DIR}" "${OUTPUT_DIR}" logs
-
 source "${VENV_PATH}/bin/activate"
 
 python src/inference.py \
-  --model_dir "${MODEL_DIR}" \
+  --model_dir "${INFERENCE_MODEL}" \
   --csv "${TEST_CSV_PATH}" \
+  --output_dir "${INFERENCE_OUTPUT_DIR}" \
   --max_new_tokens "${MAX_NEW_TOKENS}" \
   --max_seq_length "${MAX_SEQ}"

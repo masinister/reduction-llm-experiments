@@ -6,12 +6,17 @@ export MODULE_CUDA="cuda12.6/toolkit/12.6.2"
 export VENV_PATH="$HOME/venvs/unsloth"
 export REQ_FILE="./requirements.txt"
 
-export TRAIN_CSV_PATH="./karp.csv"
-export TEST_CSV_PATH="./karp.csv"
-export MODEL_NAME="unsloth/Meta-Llama-3.1-8B-bnb-4bit"
+export TRAIN_CSV_PATH="data/karp.csv"
+export TEST_CSV_PATH="data/karp.csv"
 
-export MODEL_DIR="./models/llama_4bit"
-export OUTPUT_DIR="./outputs"
+# Model paths (can be HuggingFace identifiers or local directories)
+export BASE_MODEL="unsloth/gpt-oss-20b-GGUF"  # Model to be fine-tuned
+export FINETUNED_MODEL="./models/finetuned_model"
+export INFERENCE_MODEL="unsloth/gpt-oss-20b-GGUF"
+# export INFERENCE_MODEL="./models/finetuned_model"
+
+# Output directory for model inference content/results
+export INFERENCE_OUTPUT_DIR="./inference_outputs"
 
 export MAX_SEQ="2048"
 export BATCH_SIZE="1"

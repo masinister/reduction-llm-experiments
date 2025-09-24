@@ -18,14 +18,12 @@ source ./config.sh
 module load "${MODULE_PYTHON}"
 module load "${MODULE_CUDA}"
 
-mkdir -p "$(dirname "${MODEL_DIR}")" "${OUTPUT_DIR}" logs
-
 source "${VENV_PATH}/bin/activate"
 
 python src/finetune.py \
   --csv "${TRAIN_CSV_PATH}" \
-  --model_name "${MODEL_NAME}" \
-  --output_dir "${MODEL_DIR}" \
+  --model_name "${BASE_MODEL}" \
+  --output_dir "${FINETUNED_MODEL}" \
   --max_seq_length "${MAX_SEQ}" \
   --per_device_train_batch_size "${BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRAD_ACC}" \
