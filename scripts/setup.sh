@@ -11,12 +11,13 @@
 
 set -euo pipefail
 
+mkdir -p data models logs outputs "$(dirname "${FINETUNED_MODEL}")" "${INFERENCE_OUTPUT_DIR}"
+
 source ./config.sh
 
 module load "${MODULE_PYTHON}"
 module load "${MODULE_CUDA}"
 
-mkdir -p data models logs "$(dirname "${FINETUNED_MODEL}")" "${INFERENCE_OUTPUT_DIR}"
 
 rm -rf "${VENV_PATH}"
 python -m venv "${VENV_PATH}"
