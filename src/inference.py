@@ -10,7 +10,7 @@ from prompts import setup_tokenizer_with_template, build_conversation_dict
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", default="outputs/karp_alpaca_lora")
+    parser.add_argument("--model_dir", default="models/finetuned_model")
     parser.add_argument("--csv", required=True, help="Path to CSV file containing dataset")
     parser.add_argument("--output_dir", default="./inference_outputs", help="Directory to save inference results")
     parser.add_argument("--max_new_tokens", type=int, default=512)
