@@ -24,5 +24,10 @@ python -m venv "${VENV_PATH}"
 source "${VENV_PATH}/bin/activate"
 pip install --upgrade pip
 pip install --upgrade build setuptools wheel
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu$(echo $CUDA_VERSION | tr -d .) 
+
+# Extract CUDA version from MODULE_CUDA (e.g., "cuda12.6/toolkit/12.6.2" -> "126")
+CUDA_VERSION=$(echo "${MODULE_CUDA}" | sed -n 's/cuda\([0-9]*\)\.\([0-9]*\).*/\1\2/p')
+echo "Detected CUDA version: ${CUDA_VERSION}"
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu${CUDA_VERSION}
 pip install unsloth
