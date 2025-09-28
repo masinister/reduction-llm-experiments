@@ -1,6 +1,3 @@
-import unsloth
-from unsloth.chat_templates import get_chat_template
-
 CHAT_TEMPLATE_NAME = "alpaca"
 
 SYSTEM_PROMPT = (
@@ -9,6 +6,7 @@ SYSTEM_PROMPT = (
 )
 
 def setup_tokenizer_with_template(tokenizer):
+    from unsloth.chat_templates import get_chat_template
     tokenizer = get_chat_template(
         tokenizer,
         chat_template = CHAT_TEMPLATE_NAME

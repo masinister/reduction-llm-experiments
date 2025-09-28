@@ -1,5 +1,3 @@
-import unsloth
-from unsloth import FastLanguageModel
 import argparse
 import os
 import torch
@@ -58,6 +56,7 @@ def main():
     total_examples = len(ds)
 
     log("Loading model and tokenizer...", only_main=True)
+    from unsloth import FastLanguageModel
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_dir,
         max_seq_length = args.max_seq_length,
