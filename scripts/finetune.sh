@@ -20,18 +20,24 @@ module load "${MODULE_CUDA}"
 
 source "${VENV_PATH}/bin/activate"
 
-GPUS_PER_NODE="$(python - <<'PY'
-import torch
+GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-${SLURM_GPUS_PER_NODE:-}}"
+if [[ -z "${GPUS_PER_NODE}" ]]; then
+  echo "SLURM_GPUS_ON_NODE not set; please request GPUs via --gres and re-submit." >&2
+  exit 1
+fi
 
-count = torch.cuda.device_count()
-if count == 0:
-    raise SystemExit("No CUDA devices available for fine-tuning.")
+# SLURM may return values like "gpu:4" or "1(x4)"; keep only the leading integer.
+GPUS_PER_NODE="${GPUS_PER_NODE%%,*}"
+GPUS_PER_NODE="${GPUS_PER_NODE##*:}"
+GPUS_PER_NODE="${GPUS_PER_NODE##*(}"
+GPUS_PER_NODE="${GPUS_PER_NODE%%)*}"
 
-print(count)
-PY
-)"
+if ! [[ "${GPUS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_NODE}" -lt 1 ]]; then
+  echo "Unable to parse GPU count from SLURM_GPUS_ON_NODE='${SLURM_GPUS_ON_NODE}'" >&2
+  exit 1
+fi
 
-echo "Launching fine-tuning across ${GPUS_PER_NODE} visible GPU(s)" >&2
+echo "Launching fine-tuning across ${GPUS_PER_NODE} GPU(s)" >&2
 
 torchrun --standalone --nproc_per_node="${GPUS_PER_NODE}" src/finetune.py \
   --csv "${TRAIN_CSV_PATH}" \
