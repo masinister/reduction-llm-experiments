@@ -20,6 +20,10 @@ module load "${MODULE_CUDA}"
 
 source "${VENV_PATH}/bin/activate"
 
+# Force CUDA to use fresh context for each distributed process
+export CUDA_LAUNCH_BLOCKING=0
+export CUDA_CACHE_DISABLE=1
+
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "CUDA_VISIBLE_DEVICES not set; request GPUs via --gres." >&2
   exit 1
