@@ -3,11 +3,37 @@ from unsloth import FastLanguageModel
 import argparse
 import os
 import torch
+import torch.distributed as dist
 from datasets import load_dataset
 from transformers import TrainingArguments
 from trl import SFTTrainer
 
 from prompts import setup_tokenizer_with_template, build_conversation_dict
+
+
+def init_distributed():
+    """Initialise torch.distributed if launched under torchrun."""
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    if world_size > 1 and dist.is_available():
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+
+        if not dist.is_initialized():
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            dist.init_process_group(backend=backend)
+
+        rank = dist.get_rank()
+    else:
+        rank = 0
+
+    return local_rank, world_size, rank
+
+
+def cleanup_distributed():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 def build_train_dataset(csv_path):
     ds = load_dataset("csv", data_files=csv_path, split="train")
@@ -54,10 +80,17 @@ def main():
     parser.add_argument("--lora_r", type=int, default=16)
     args = parser.parse_args()
 
-    print("Loading dataset...")
+    local_rank, world_size, rank = init_distributed()
+    is_main_process = rank == 0
+
+    def log(message):
+        if is_main_process:
+            print(message, flush=True)
+
+    log("Loading dataset...")
     ds_raw = build_train_dataset(args.csv)
 
-    print("Loading model and tokenizer...")
+    log("Loading model and tokenizer...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
@@ -65,13 +98,16 @@ def main():
         load_in_4bit = True,
     )
 
-    print("Setting up tokenizer with Alpaca template...")
+    device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
+    model.to(device)
+
+    log("Setting up tokenizer with Alpaca template...")
     tokenizer = setup_tokenizer_with_template(tokenizer)
 
-    print("Formatting dataset...")
+    log("Formatting dataset...")
     ds = format_dataset_with_template(ds_raw, tokenizer)
 
-    print("Patching model with LoRA...")
+    log("Patching model with LoRA...")
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_r,
@@ -86,6 +122,7 @@ def main():
         random_state = 3407,
         use_rslora = False,
     )
+    model.to(device)
 
     training_args = TrainingArguments(
         output_dir = args.output_dir,
@@ -99,6 +136,7 @@ def main():
         evaluation_strategy = "no",
         learning_rate = 2e-4,
         weight_decay = 0.0,
+        ddp_find_unused_parameters = False if world_size > 1 else None,
     )
 
     trainer = SFTTrainer(
@@ -112,12 +150,14 @@ def main():
         args = training_args,
     )
 
-    print("Starting training...")
+    log("Starting training...")
     trainer.train()
 
-    print("Saving adapter + tokenizer...")
-    os.makedirs(args.output_dir, exist_ok=True)
-    model.save_pretrained(args.output_dir)
-    tokenizer.tokenizer.save_pretrained(args.output_dir)
+    if trainer.is_world_process_zero():
+        log("Saving adapter + tokenizer...")
+        os.makedirs(args.output_dir, exist_ok=True)
+        trainer.model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        log(f"Model saved to {args.output_dir}")
 
-    print(f"Model saved to {args.output_dir}")
+    cleanup_distributed()

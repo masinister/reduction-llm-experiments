@@ -11,9 +11,9 @@
 
 set -euo pipefail
 
-mkdir -p data models logs outputs "$(dirname "${FINETUNED_MODEL}")" "${INFERENCE_OUTPUT_DIR}"
-
 source ./config.sh
+
+mkdir -p data models logs outputs "$(dirname "${FINETUNED_MODEL}")" "${INFERENCE_OUTPUT_DIR}"
 
 module load "${MODULE_PYTHON}"
 module load "${MODULE_CUDA}"

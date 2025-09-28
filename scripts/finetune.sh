@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=karp_finetune
 #SBATCH --partition=short
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #SBATCH --constraint=A100|H100|H200
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -20,7 +20,20 @@ module load "${MODULE_CUDA}"
 
 source "${VENV_PATH}/bin/activate"
 
-python src/finetune.py \
+GPUS_PER_NODE="$(python - <<'PY'
+import torch
+
+count = torch.cuda.device_count()
+if count == 0:
+    raise SystemExit("No CUDA devices available for fine-tuning.")
+
+print(count)
+PY
+)"
+
+echo "Launching fine-tuning across ${GPUS_PER_NODE} visible GPU(s)" >&2
+
+torchrun --standalone --nproc_per_node="${GPUS_PER_NODE}" src/finetune.py \
   --csv "${TRAIN_CSV_PATH}" \
   --model_name "${BASE_MODEL}" \
   --output_dir "${FINETUNED_MODEL}" \
