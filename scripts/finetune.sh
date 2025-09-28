@@ -20,20 +20,16 @@ module load "${MODULE_CUDA}"
 
 source "${VENV_PATH}/bin/activate"
 
-GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-${SLURM_GPUS_PER_NODE:-}}"
-if [[ -z "${GPUS_PER_NODE}" ]]; then
-  echo "SLURM_GPUS_ON_NODE not set; please request GPUs via --gres and re-submit." >&2
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  echo "CUDA_VISIBLE_DEVICES not set; request GPUs via --gres." >&2
   exit 1
 fi
 
-# SLURM may return values like "gpu:4" or "1(x4)"; keep only the leading integer.
-GPUS_PER_NODE="${GPUS_PER_NODE%%,*}"
-GPUS_PER_NODE="${GPUS_PER_NODE##*:}"
-GPUS_PER_NODE="${GPUS_PER_NODE##*(}"
-GPUS_PER_NODE="${GPUS_PER_NODE%%)*}"
+IFS=',' read -ra _gpus <<< "${CUDA_VISIBLE_DEVICES}"
+GPUS_PER_NODE="${#_gpus[@]}"
 
-if ! [[ "${GPUS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_NODE}" -lt 1 ]]; then
-  echo "Unable to parse GPU count from SLURM_GPUS_ON_NODE='${SLURM_GPUS_ON_NODE}'" >&2
+if (( GPUS_PER_NODE < 1 )); then
+  echo "No CUDA devices visible to this job." >&2
   exit 1
 fi
 
