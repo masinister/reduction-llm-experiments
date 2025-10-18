@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=llm_inference_multi_gpu
-#SBATCH --partition=gpu
+#SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -19,7 +19,7 @@ set -euo pipefail
 echo "===== Multi-GPU Inference Job ====="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
-echo "GPUs: $SLURM_GPUS"
+echo "GPUs: $SLURM_GPUS_ON_NODE"
 echo "Date: $(date)"
 echo "===================================="
 
