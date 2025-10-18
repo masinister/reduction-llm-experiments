@@ -40,9 +40,8 @@ python3 -m pip install torch --index-url https://download.pytorch.org/whl/cu126
 
 # 3) Install the package in editable mode
 echo "Installing reduction-llm package..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-python3 -m pip install -e "$REPO_ROOT"
+# SLURM_SUBMIT_DIR is set to the directory where sbatch was run
+python3 -m pip install -e "${SLURM_SUBMIT_DIR:-.}"
 
 echo ""
 echo "✅ Setup complete at $(date)!"
