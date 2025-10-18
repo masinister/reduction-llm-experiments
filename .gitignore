@@ -36,6 +36,10 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# SLURM logs
+logs/*.out
+logs/*.err
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -193,4 +197,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-eamon
+*.csv

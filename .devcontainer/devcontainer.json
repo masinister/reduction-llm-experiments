@@ -1,0 +1,14 @@
+{
+  "name": "Reduction LLM",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+  ,
+  "postCreateCommand": "/workspace/.devcontainer/bootstrap.sh",
+  "remoteUser": "root"
+}

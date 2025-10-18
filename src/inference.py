@@ -1,239 +1,316 @@
+from __future__ import annotations
 import os
-import argparse
-import torch
-import json
-import pandas as pd
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, BitsAndBytesConfig
-from peft import PeftModel, get_peft_model, LoraConfig, TaskType
+import time
+import threading
+import configparser
+import atexit
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run inference on fine-tuned model from finetune.py")
-    parser.add_argument("--model_path", type=str, required=True,
-                        help="Path to the output directory from finetune.py")
-    parser.add_argument("--base_model", type=str, required=True,
-                        help="Base model name/path (same as used in finetune.py)")
-    parser.add_argument("--csv_path", type=str, required=True)
-    parser.add_argument("--held_out_file", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="./inference_results")
-    parser.add_argument("--max_length", type=int, default=2048)
-    parser.add_argument("--max_new_tokens", type=int, default=2048)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--do_sample", action="store_true", default=True)
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--model_dtype", type=str, default="bfloat16",
-                        choices=["float16", "bfloat16", "float32"])
-    parser.add_argument("--merge_adapters", action="store_true",
-                        help="Merge LoRA adapters into base model")
-    parser.add_argument("--cot", action="store_true", help="Use chain-of-thought format for inference")
-    return parser.parse_args()
+@dataclass
+class _Turn:
+    """Internal representation of a conversation turn."""
+    user: str
+    assistant: str
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
-def load_test_data(args):
-    csv_path = os.path.expanduser(args.csv_path)
-
-    if args.held_out_file is None:
-        # The held_out_indices.json should be in the same directory as the model
-        held_out_file = os.path.join(args.model_path, "held_out_indices.json")
-    else:
-        held_out_file = os.path.expanduser(args.held_out_file)
-
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-    if not os.path.exists(held_out_file):
-        raise FileNotFoundError(f"Held-out indices not found: {held_out_file}")
-
-    with open(held_out_file, "r") as f:
-        held_out_info = json.load(f)
-
-    raw = load_dataset("csv", data_files=csv_path, split="train")
-
-    if len(raw) != held_out_info["dataset_size"]:
-        raise ValueError("Dataset size mismatch")
-
-    test_data = raw.select(held_out_info["test_indices"])
-    val_data = raw.select(held_out_info["validation_indices"])
-
-    return test_data, val_data, held_out_info
-
-def load_model_and_tokenizer(args):
-    print(f"Loading model from {args.model_path}")
-    dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
-    model_dtype = dtype_map[args.model_dtype]
-
-    # Find the latest checkpoint subdirectory
-    checkpoint_dirs = [d for d in os.listdir(args.model_path) if d.startswith("checkpoint-")]
-    if not checkpoint_dirs:
-        raise FileNotFoundError(f"No checkpoint directories found in {args.model_path}")
-
-    # Use the latest checkpoint
-    latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.split("-")[1]))
-    checkpoint_path = os.path.join(args.model_path, latest_checkpoint)
-    print(f"Loading from latest checkpoint: {checkpoint_path}")
-
-    # Load tokenizer from the checkpoint directory
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
-    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-
-    print(f"Loading base model: {args.base_model}")
-
-    # Load base model first
-    base_model = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
-        torch_dtype=model_dtype,
-        device_map="auto" if args.device == "auto" else None,
-        trust_remote_code=True,
-    )
-
-    # Load PEFT adapters on top of base model
-    model = PeftModel.from_pretrained(
-        base_model,
-        checkpoint_path,
-        torch_dtype=model_dtype,
-        device_map="auto" if args.device == "auto" else None,
-    )
-    print("✅ Loaded PEFT model from checkpoint")
-
-    # Merge adapters if requested
-    if args.merge_adapters:
-        print("Merging LoRA adapters into base model...")
-        model = model.merge_and_unload()
-        print("✅ Adapters merged")
-
-    model.config.use_cache = True
-    model.eval()
-    return model, tokenizer
+@dataclass
+class _Session:
+    """Internal session state for multi-turn conversations."""
+    session_id: str
+    system_prompt: str
+    turns: List[_Turn] = field(default_factory=list)
+    
+    def add_turn(self, user: str, assistant: str, meta: Optional[Dict[str, Any]] = None):
+        self.turns.append(_Turn(user=user, assistant=assistant, meta=meta or {}))
+    
+    def build_messages(self, new_user_message: str) -> List[Dict[str, str]]:
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for turn in self.turns:
+            messages.append({"role": "user", "content": turn.user})
+            messages.append({"role": "assistant", "content": turn.assistant})
+        messages.append({"role": "user", "content": new_user_message})
+        return messages
 
 
-
-def run_inference(model, tokenizer, dataset, dataset_name, args):
-    results = []
-    device = next(model.parameters()).device
-
-    for i, example in enumerate(dataset):
-        print(f"{dataset_name} example {i+1}/{len(dataset)}")
-
-        # Choose system message based on CoT flag
-        if args.cot:
-            system_content = "Write a natural-language LaTeX reduction given source and target. Think step by step."
-        else:
-            system_content = "Write a natural-language LaTeX reduction given source and target."
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_content
-            },
-            {
-                "role": "user", 
-                "content": f"Source: {example['source_text']}\nTarget: {example['target_text']}"
-            }
-        ]
+class Model:
+    """Persistent vLLM model wrapper with session memory.
+    
+    Args:
+        model_id: HuggingFace model ID or local path
+        tensor_parallel_size: Number of GPUs for tensor parallelism
+        gpu_memory_utilization: Fraction of GPU memory to use (0.0-1.0, default 0.8)
+        max_model_len: Maximum model sequence length (limits KV cache memory)
+        system_prompt: Default system prompt for all sessions
+        temperature: Default sampling temperature (0.0-2.0)
+        top_p: Default nucleus sampling threshold
+        top_k: Default top-k sampling limit
+        max_tokens: Default max tokens to generate
+        **kwargs: Additional vLLM.LLM initialization parameters
+    
+    Example:
+        model = Model("meta-llama/Meta-Llama-3-8B-Instruct", temperature=0.8)
+        result = model.infer("Hello!", session_id="chat1")
+        print(result["text"])
+    """
+    
+    def __init__(
+        self,
+        model_id: str,
+        tensor_parallel_size: int = 1,
+        gpu_memory_utilization: float = 0.8,
+        max_model_len: Optional[int] = None,
+        system_prompt: str = "You are a helpful AI assistant.",
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        max_tokens: int = 1024,
+        **kwargs
+    ):
+        self.model_id = model_id
+        self.default_system_prompt = system_prompt
+        self.default_temperature = temperature
+        self.default_top_p = top_p
+        self.default_top_k = top_k
+        self.default_max_tokens = max_tokens
+        self._closed = False
         
-        try:
-            prompt = tokenizer.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
-        except Exception as e:
-            # Fallback to manual formatting if tokenizer doesn't support chat templates
-            print(f"Warning: Chat template not supported, falling back to manual formatting: {e}")
-            prompt = (
-                f"System: {messages[0]['content']}\n"
-                f"User: {messages[1]['content']}\n"
-                f"Assistant: "
-            )
+        # Initialize model and tokenizer
+        print(f"[Model] Loading '{model_id}' (tp={tensor_parallel_size})...")
+        
+        # Configure distributed backend for multi-GPU
+        vllm_kwargs = {
+            "model": model_id,
+            "tensor_parallel_size": tensor_parallel_size,
+            "trust_remote_code": True,
+            "dtype": "auto",  # Avoids torch_dtype deprecation warning
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "disable_log_stats": True,  # Reduce logging verbosity
+        }
+        
+        # Add max_model_len if specified
+        if max_model_len is not None:
+            vllm_kwargs["max_model_len"] = max_model_len
+        
+        # Use ray backend for multi-GPU (SLURM clusters with A100/H200)
+        if tensor_parallel_size > 1:
+            vllm_kwargs["distributed_executor_backend"] = "ray"
+        
+        # Merge with user-provided kwargs (user kwargs take precedence)
+        vllm_kwargs.update(kwargs)
+        
+        self._llm = LLM(**vllm_kwargs)
+        self._tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self._sessions: Dict[str, _Session] = {}
+        self._lock = threading.Lock()
+        print(f"[Model] Loaded.")
 
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_length)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        # Ensure resources are cleaned up on interpreter shutdown
+        atexit.register(self.close)
 
+    def __enter__(self) -> "Model":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self):  # best-effort cleanup
         try:
-            with torch.no_grad():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=args.max_new_tokens,
-                    temperature=args.temperature,
-                    do_sample=args.do_sample,
-                    pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.eos_token_id
+            self.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        print("[Model] Cleaning up resources...")
+        with self._lock:
+            if getattr(self, "_closed", False):
+                return
+            # Shutdown vLLM if supported
+            try:
+                if hasattr(self, "_llm"):
+                    self._llm = None  # Dereference the vLLM instance
+            except Exception as e:
+                print(f"[Model] Warning: vLLM cleanup failed: {e}")
+            # Destroy torch.distributed process group if initialized
+            try:
+                import torch.distributed as dist  # type: ignore
+                if dist.is_available() and dist.is_initialized():
+                    dist.destroy_process_group()
+            except Exception as e:
+                print(f"[Model] Warning: destroy_process_group failed: {e}")
+            self._closed = True
+    
+    def _get_session(self, session_id: str, system_prompt: str) -> _Session:
+        """Get or create a session."""
+        with self._lock:
+            if session_id not in self._sessions:
+                self._sessions[session_id] = _Session(
+                    session_id=session_id,
+                    system_prompt=system_prompt,
                 )
-            decoded = tokenizer.decode(output[0], skip_special_tokens=True)
-            generated_reduction = decoded[len(prompt):].strip()
-        except Exception as e:
-            generated_reduction = f"ERROR: {str(e)}"
-
-        results.append({
-            "dataset": dataset_name,
-            "index": i,
-            "source_text": example["source_text"],
-            "target_text": example["target_text"],
-            "ground_truth_reduction": example.get("reduction_full_text", ""),
-            "generated_reduction": generated_reduction,
-            "prompt": prompt,
-            "cot_mode": args.cot
-        })
-
-    return results
-
-
-def save_results(results, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "inference_results.csv")
-
-    # Convert results to DataFrame and save as CSV
-    df = pd.DataFrame(results)
-    df.to_csv(output_file, index=False, encoding='utf-8')
-
-    print(f"\nSaved results to {output_file}")
+            return self._sessions[session_id]
     
-    # Print summary by dataset
-    for dataset_name in df['dataset'].unique():
-        dataset_results = df[df['dataset'] == dataset_name]
-        succeeded = len(dataset_results[~dataset_results['generated_reduction'].str.startswith('ERROR:', na=False)])
-        failed = len(dataset_results[dataset_results['generated_reduction'].str.startswith('ERROR:', na=False)])
-        print(f"{dataset_name}: {succeeded} succeeded, {failed} failed")
+    def infer(
+        self,
+        prompt: str,
+        session_id: str = "default",
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        enable_thinking: bool = False,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Run inference with optional session memory.
+        
+        Args:
+            prompt: User message to send
+            session_id: Session identifier for conversation memory
+            system_prompt: Override default system prompt for this session
+            temperature: Override default temperature
+            top_p: Override default top_p
+            top_k: Override default top_k
+            max_tokens: Override default max_tokens
+            enable_thinking: Enable thinking tokens (model-dependent)
+            **kwargs: Additional metadata to store with result
+        
+        Returns:
+            dict: {
+                "text": cleaned output text,
+                "raw_text": raw model output,
+                "tokens": number of tokens generated,
+                "latency_s": generation time in seconds,
+                "session_id": session identifier,
+                "thinking": whether thinking was enabled,
+                **kwargs
+            }
+        """
+        # Use defaults if not overridden
+        system_prompt = system_prompt or self.default_system_prompt
+        temperature = temperature if temperature is not None else self.default_temperature
+        top_p = top_p if top_p is not None else self.default_top_p
+        top_k = top_k if top_k is not None else self.default_top_k
+        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
+        
+        # Build conversation history
+        session = self._get_session(session_id, system_prompt)
+        messages = session.build_messages(prompt)
+        
+        # Format with chat template
+        input_text = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+        
+        # Generate
+        sampling = SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_tokens=max_tokens,
+        )
+        
+        start = time.time()
+        outputs = self._llm.generate([input_text], sampling)
+        latency = time.time() - start
+        
+        # Extract and clean output
+        raw = outputs[0].outputs[0].text
+        clean = raw.split("</think>", 1)[1].strip() if "</think>" in raw else raw.strip()
+        
+        # Update session memory
+        session.add_turn(user=prompt, assistant=clean, meta={"raw": raw})
+        
+        return {
+            "text": clean,
+            "raw_text": raw,
+            "tokens": len(outputs[0].outputs[0].token_ids),
+            "latency_s": latency,
+            "session_id": session_id,
+            "thinking": enable_thinking,
+            **kwargs,
+        }
     
-    total_succeeded = len(df[~df['generated_reduction'].str.startswith('ERROR:', na=False)])
-    total_failed = len(df[df['generated_reduction'].str.startswith('ERROR:', na=False)])
-    print(f"Total: {total_succeeded} succeeded, {total_failed} failed")
-
-    return output_file
-
-
-def main():
-    args = parse_args()
-
-    print("="*50)
-    print("INFERENCE SCRIPT FOR FINETUNE.PY OUTPUTS")
-    print("="*50)
-    print(f"Model path: {args.model_path}")
-    print(f"Base model: {args.base_model}")
-    print(f"CSV path: {args.csv_path}")
-    print(f"Output directory: {args.output_dir}")
-    print(f"Device: {args.device}")
-    print(f"Dtype: {args.model_dtype}")
-    print("="*50)
+    def clear_session(self, session_id: str) -> None:
+        """Clear conversation history for a session."""
+        with self._lock:
+            if session_id in self._sessions:
+                del self._sessions[session_id]
     
-    model, tokenizer = load_model_and_tokenizer(args)
-    test_data, val_data, held_out_info = load_test_data(args)
+    def list_sessions(self) -> List[str]:
+        """Get list of active session IDs."""
+        with self._lock:
+            return list(self._sessions.keys())
 
-    # Always run inference on both test and validation sets
-    print("\nRunning inference on test set...")
-    test_results = run_inference(model, tokenizer, test_data, "test", args)
+
+def _find_config() -> Optional[Path]:
+    """Find config.ini in current dir or parent dirs."""
+    current = Path.cwd()
+    for parent in [current] + list(current.parents):
+        config_path = parent / "config.ini"
+        if config_path.exists():
+            return config_path
+    return None
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load configuration from config.ini."""
+    config_path = _find_config()
+    if not config_path:
+        return {}
     
-    print("\nRunning inference on validation set...")
-    val_results = run_inference(model, tokenizer, val_data, "validation", args)
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
     
-    # Combine all results
-    all_results = test_results + val_results
+    config = {}
+    if parser.has_section("model"):
+        config["model_id"] = parser.get("model", "model_id", fallback=None)
+        config["toy_model_id"] = parser.get("model", "toy_model_id", fallback="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     
-    # Save combined results to single file
-    output_file = save_results(all_results, args.output_dir)
+    if parser.has_section("inference"):
+        config["temperature"] = parser.getfloat("inference", "temperature", fallback=0.7)
+        config["top_p"] = parser.getfloat("inference", "top_p", fallback=0.95)
+        config["top_k"] = parser.getint("inference", "top_k", fallback=50)
+        config["max_tokens"] = parser.getint("inference", "max_tokens", fallback=1024)
+    
+    if parser.has_section("system"):
+        config["system_prompt"] = parser.get("system", "system_prompt", fallback="You are a helpful AI assistant.")
+    
+    if parser.has_section("hardware"):
+        config["tensor_parallel_size"] = parser.getint("hardware", "tensor_parallel_size", fallback=1)
+        config["gpu_memory_utilization"] = parser.getfloat("hardware", "gpu_memory_utilization", fallback=0.8)
+        config["max_model_len"] = parser.getint("hardware", "max_model_len", fallback=None)
+    
+    return config
 
-    print(f"\nDone. Output file: {output_file}")
 
-
-if __name__ == "__main__":
-    main()
+def load_from_config(toy: bool = False, **kwargs) -> Model:
+    """Load model using settings from config.ini.
+    
+    Args:
+        toy: If True, use toy_model_id instead of model_id
+        **kwargs: Override any config parameters
+    """
+    config = _load_config()
+    
+    if toy:
+        config["model_id"] = config.get("toy_model_id", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    
+    # Remove toy_model_id from config - it's not a Model parameter
+    config.pop("toy_model_id", None)
+    
+    # Override with kwargs
+    config.update(kwargs)
+    
+    if "model_id" not in config:
+        raise ValueError("model_id must be specified in config.ini or as argument")
+    
+    return Model(**config)
