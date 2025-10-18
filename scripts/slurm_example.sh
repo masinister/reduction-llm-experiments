@@ -26,12 +26,7 @@ module load cuda/12.6.3/5fe76nu
 module load python/3.11.10
 source ~/venvs/reduction-llm/bin/activate
 
-# Your inference code here
-# Example: Run one of your scripts
-python examples/reduction_batch.py \
-    --input_csv data/input.csv \
-    --output_csv results/output.csv \
-    --temperature 0.7 \
-    --max_tokens 2048
+# Run smoke test with single GPU
+python smoke_test.py
 
 echo "✅ Job completed at $(date)"

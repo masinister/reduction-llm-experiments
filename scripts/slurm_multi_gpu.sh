@@ -32,26 +32,11 @@ source ~/venvs/reduction-llm/bin/activate
 export RAY_TMPDIR="/tmp/ray_${SLURM_JOB_ID}"
 mkdir -p "$RAY_TMPDIR"
 
-# Run inference with 4-GPU tensor parallelism
-python -c "
-from src.inference import Model
+# Make all 4 GPUs visible to the smoke test
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-# Create model with 4-GPU tensor parallelism
-# Ray backend is automatically used for multi-GPU
-model = Model(
-    model_id='meta-llama/Meta-Llama-3-70B-Instruct',  # Large model for multi-GPU
-    tensor_parallel_size=4,  # Split across 4 GPUs
-    temperature=0.7,
-    max_tokens=2048,
-    gpu_memory_utilization=0.95  # Use most of GPU memory
-)
-
-# Run inference
-result = model.infer('Explain polynomial-time reductions in detail.')
-print(f'Response: {result[\"text\"]}')
-print(f'Tokens: {result[\"tokens\"]}')
-print(f'Latency: {result[\"latency_s\"]:.2f}s')
-"
+# Run smoke test with multiple GPUs available
+python smoke_test.py
 
 # Cleanup Ray temp directory
 rm -rf "$RAY_TMPDIR"
