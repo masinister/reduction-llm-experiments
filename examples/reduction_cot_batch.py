@@ -87,12 +87,12 @@ def parse_args():
     p.add_argument("--thinking", choices=["on", "off"], default="on", help="Enable special thinking mode if supported")
     p.add_argument("--num_steps", type=int, default=5, help="Number of CoT steps to generate")
 
-    # Model params
-    p.add_argument("--temperature", type=float, default=0.7)
-    p.add_argument("--top_p", type=float, default=0.95)
-    p.add_argument("--top_k", type=int, default=50)
-    p.add_argument("--max_tokens", type=int, default=512)
-    p.add_argument("--tensor_parallel_size", type=int, default=1)
+    # Model params (no defaults - let config.ini handle defaults)
+    p.add_argument("--temperature", type=float, help="Override temperature from config")
+    p.add_argument("--top_p", type=float, help="Override top_p from config")
+    p.add_argument("--top_k", type=int, help="Override top_k from config")
+    p.add_argument("--max_tokens", type=int, help="Override max_tokens from config")
+    p.add_argument("--tensor_parallel_size", type=int, help="Override tensor_parallel_size from config")
     return p.parse_args()
 
 
@@ -115,24 +115,22 @@ def main():
 
     print(f"[cot-batch] Loaded {len(df)} rows from {path}")
 
-    # Initialize model
-    if args.toy:
-        model = load_from_config(
-            toy=True,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            max_tokens=args.max_tokens,
-        )
-    else:
-        model = Model(
-            args.model,
-            tensor_parallel_size=args.tensor_parallel_size,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            max_tokens=args.max_tokens,
-        )
+    # Initialize model - only pass explicitly provided CLI arguments
+    model_kwargs = {"toy": args.toy}
+    if args.model is not None:
+        model_kwargs["model_id"] = args.model
+    if args.tensor_parallel_size is not None:
+        model_kwargs["tensor_parallel_size"] = args.tensor_parallel_size
+    if args.temperature is not None:
+        model_kwargs["temperature"] = args.temperature
+    if args.top_p is not None:
+        model_kwargs["top_p"] = args.top_p
+    if args.top_k is not None:
+        model_kwargs["top_k"] = args.top_k
+    if args.max_tokens is not None:
+        model_kwargs["max_tokens"] = args.max_tokens
+    
+    model = load_from_config(**model_kwargs)
 
     # Process rows
     cot_generations = []
