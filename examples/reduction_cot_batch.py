@@ -39,10 +39,6 @@ def create_cot_messages(
     thinking: str = "on",
     num_steps: int = 5,
 ) -> List[Dict[str, str]]:
-    """Produce a synthetic “chain of thought” leading to a known reduction.
-
-    This replicates the legacy prompt structure provided by the user.
-    """
 
     system_message = f"""detailed thinking {thinking}
 
