@@ -36,7 +36,7 @@ mkdir -p "$RAY_TMPDIR"
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Run smoke test with multiple GPUs available
-python examples/reduction_cot_batch.py --toy --input_csv="~/data/karp.csv"
+python examples/reduction_cot_batch.py --model="openai/gpt-oss-20b" --input_csv="~/data/karp.csv"
 
 # Cleanup Ray temp directory
 rm -rf "$RAY_TMPDIR"
