@@ -85,12 +85,10 @@ def create_step_extraction_messages(
     target_text: str,
     reduction_full_text: str,
 ) -> List[Dict[str, str]]:
-    """Create messages for unfolding a reduction into granular proof steps."""
+    """Create messages for unfolding a reduction into proof steps."""
     
-    system_message = """You are a complexity theory expert unfolding reduction proofs.
-Your task is to break down the reduction into atomic steps - both definitions/constructions 
-and claims that need proof. Distinguish between descriptive steps and claims to be proven.
-You have flexibility in determining the appropriate level of granularity."""
+    system_message = """You are a complexity theory expert breaking down reduction proofs.
+Extract the essential logical steps. Keep it simple and focused on what matters."""
 
     user_message = f"""**Source problem:**
 {source_text}
@@ -102,45 +100,23 @@ You have flexibility in determining the appropriate level of granularity."""
 {reduction_full_text}
 
 **Task:**
-Unfold this reduction into a complete sequence of steps with appropriate detail. 
-If appropriate, break any step into sub-steps (4a, 4b, etc.) if it improves clarity.
+Unfold and organize this reduction into its essential steps. Generate concrete and precise claims that can be individually proved and verified. Omit all proof details, but explicitly state what needs to addressed in each step.
 
-**Required Structure:**
-The steps should follow this logical progression:
-
-**Phase 1: Problem Setup**
-1. **Source problem**: Describe the source problem and its key properties
-2. **Target problem**: Describe the target problem and its key properties
-
-**Phase 2: Reduction Construction**
-3. **Main idea**: State the high-level approach and key insight(s) of the reduction
-4. **Construction**: Define what is constructed (transformation, gadgets, auxiliary structures)
-
-**Phase 3: Correctness Proof**
-5. **Instance mapping**: Prove the construction maps source instances to valid target instances
-6. **Forward direction**: Prove that source satisfiable implies target satisfiable
-7. **Reverse direction**: Prove that target satisfiable implies source satisfiable
-
-**Phase 4: Efficiency**
-8. **Polynomial time**: Prove the reduction runs in polynomial time
-
-**Guidelines:**
-- **Descriptive steps** (problems, constructions, definitions) should state WHAT is defined
-- **Proof steps** (mapping, forward/reverse directions, polynomial time) should state claims to PROVE
-- Break down complex constructions or proofs into sub-steps (e.g., 4a, 4b, 6a, 6b)
-- You may combine very simple steps
-- Each step should be clear and independently understandable
-- Use your judgment to determine the right granularity
-- Number main steps 1, 2, 3, etc. and sub-steps as 1a, 1b, etc.
+**Key steps to identify:**
+1. Elements and properties of the source problem
+2. Elements and properties of the target problem
+3. High-level idea; correspondence between source and target elements
+4. Relevant technical lemmas or gadget constructions (if any)
+5. Full construction (what is built, including any gadgets)
+6. Structural correctness: Valid source instances map to valid target instances
+7. Forward direction: Why source satisfiable → target satisfiable
+8. Reverse direction: Why target satisfiable → source satisfiable
+9. Polynomial time analysis
 
 **Format:**
-Output ONLY a numbered list, one step per line. For example:
-1. [Source problem description]
-2. [Target problem description]
-3. [Main idea]
-4a. [First part of construction]
-4b. [Second part of construction]
-5. [Claim about instance mapping]
+Output ONLY a numbered list:
+1. [Step]
+2. [Step]
 ...
 """
 
@@ -156,16 +132,13 @@ def create_proof_messages(
     target_text: str,
     prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for proving or explaining a specific step."""
+    """Create messages for proving or explaining a step."""
     
-    system_message = """You are a complexity theory expert explaining reduction steps.
-For descriptive steps (problems, constructions, definitions): provide clear explanations.
-For proof steps (claims to be proven): provide rigorous, logically sound proofs.
-IMPORTANT: Address ONLY what this step states - do not prove the entire reduction."""
+    system_message = """You are a complexity theory expert. Provide clear, rigorous explanations."""
 
     prior_text = ""
     if prior_steps:
-        prior_text = "\n**Previously established steps:**\n"
+        prior_text = "\n**Prior steps:**\n"
         for ps in prior_steps:
             prior_text += f"{ps.index}. {ps.text}\n"
     
@@ -175,32 +148,10 @@ IMPORTANT: Address ONLY what this step states - do not prove the entire reductio
 **Target problem:**
 {target_text}
 {prior_text}
-**Current step (Step {step.index}):**
+**Step {step.index}:**
 {step.text}
 
-**Task:**
-Address THIS SPECIFIC STEP (3-8 sentences).
-
-**CRITICAL INSTRUCTIONS:**
-- If this is a **descriptive step** (problem description, construction definition):
-  * Provide a clear, precise explanation or definition
-  * No proof is needed - just state what it is
-  
-- If this is a **proof step** (a claim to be proven):
-  * Provide a rigorous proof
-  * Prove ONLY what this step claims
-  * Focus exclusively on this specific claim
-  
-- Do NOT prove the entire reduction
-- Do NOT go beyond what this step asks for
-
-**You may use:**
-- Definitions of the source and target problems
-- Previously established steps (listed above)
-- Standard complexity theory facts
-
-**Format:**
-Output ONLY the explanation or proof text, no preamble.
+Address this step clearly and completely in a few sentences. Focus only on what this step asks for.
 """
 
     return [
@@ -215,16 +166,13 @@ def create_verification_messages(
     target_text: str,
     prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for verifying a step (explanation or proof)."""
+    """Create messages for verifying a step."""
     
-    system_message = """You are a verification system for reduction steps.
-For descriptive steps: verify clarity, accuracy, and completeness of the explanation.
-For proof steps: be rigorous and adversarial - actively look for logical gaps or errors.
-CRITICAL: Verify EXACTLY what the step states - no more, no less."""
+    system_message = """You are a proof verifier. Check if the response correctly addresses the step."""
 
     prior_text = ""
     if prior_steps:
-        prior_text = "\n**Available prior steps:**\n"
+        prior_text = "\n**Prior steps:**\n"
         for ps in prior_steps:
             prior_text += f"{ps.index}. {ps.text}\n"
     
@@ -234,37 +182,23 @@ CRITICAL: Verify EXACTLY what the step states - no more, no less."""
 **Target problem:**
 {target_text}
 {prior_text}
-**Current step:**
+**Step {step.index}:**
 {step.text}
 
-**Proposed explanation/proof:**
+**Response:**
 {step.proof}
 
-**Task:**
-Verify this step by answering three questions:
+Evaluate this response:
 
-**For descriptive steps (problem descriptions, construction definitions):**
-(a) Is the explanation clear and accurate? YES or NO
-(b) Is the explanation complete (covers all necessary details)? YES or NO
-(c) Does the explanation use only available information (prior steps, standard definitions)? YES or NO
+(a) Logically valid - Is the reasoning sound and free of errors?
+(b) Complete - Does it fully address what the step asks for?
+(c) Uses only premises - Does it rely only on the problems, prior steps, and standard knowledge?
 
-**For proof steps (claims to be proven):**
-(a) Is the proof logically valid (no logical errors)? YES or NO
-(b) Is the proof complete (no gaps or missing steps)? YES or NO
-(c) Does the proof use only available premises (problem definitions + prior steps)? YES or NO
-
-**CRITICAL CHECK:**
-- Does this address ALL parts of the step?
-- Does this address ONLY what the step states (not the entire reduction)?
-- If descriptive: Is it a clear definition/explanation rather than a proof?
-- If a proof: Is it rigorous and complete?
-
-**Format:**
-Output EXACTLY in this format:
-(a) [YES/NO]
-(b) [YES/NO]
-(c) [YES/NO]
-Issues: [If any answer is NO, briefly explain the specific problem. Otherwise write "None"]
+Answer in this format:
+(a) YES/NO
+(b) YES/NO
+(c) YES/NO
+Issues: [Explain any problems, or write "None"]
 """
 
     return [
