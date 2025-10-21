@@ -224,7 +224,17 @@ class Model:
         
         # Extract and clean output
         raw = outputs[0].outputs[0].text
-        clean = raw.split("</think>", 1)[1].strip() if "</think>" in raw else raw.strip()
+        # Handle multiple thinking delimiter formats:
+        # 1. Standard: <think>...</think>
+        # 2. gpt-oss: analysis...assistantFinal
+        clean = raw
+        if "</think>" in raw:
+            clean = raw.split("</think>", 1)[1].strip()
+        elif "assistantFinal" in raw:
+            # gpt-oss format: split after assistantFinal marker
+            clean = raw.split("assistantFinal", 1)[1].strip()
+        else:
+            clean = raw.strip()
         
         # Update session memory
         session.add_turn(user=prompt, assistant=clean, meta={"raw": raw})
