@@ -375,8 +375,7 @@ def verify_reduction(
 
 def parse_args():
     p = argparse.ArgumentParser(description="Structured proof verification for reductions")
-    p.add_argument("--model", help="Model id/path (or use --toy)")
-    p.add_argument("--toy", action="store_true", help="Use tiny model for local testing")
+    p.add_argument("--toy", action="store_true", help="Use tiny model for local testing (overrides config.ini)")
     p.add_argument("--input_csv", required=True, help="CSV with source_text,target_text,reduction_full_text")
     p.add_argument("--output_csv", default="verified_proofs.csv", help="Output CSV path")
     p.add_argument("--num_claims", type=int, default=5, help="Number of claims to extract per reduction")
@@ -394,9 +393,6 @@ def parse_args():
 def main():
     args = parse_args()
     
-    if not args.model and not args.toy:
-        raise SystemExit("Error: Specify either --model MODEL_ID or --toy")
-    
     # Load CSV
     path = os.path.expanduser(args.input_csv)
     if not os.path.exists(path):
@@ -411,10 +407,9 @@ def main():
     print(f"[proof-verify] Loaded {len(df)} rows from {path}")
     print()
     
-    # Initialize model
+    # Initialize model - model_id is sourced from config.ini
+    # Only pass explicitly provided CLI arguments as overrides
     model_kwargs = {"toy": args.toy}
-    if args.model is not None:
-        model_kwargs["model_id"] = args.model
     if args.tensor_parallel_size is not None:
         model_kwargs["tensor_parallel_size"] = args.tensor_parallel_size
     if args.temperature is not None:
