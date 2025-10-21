@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""Structured proof verification for reductions (MVP).
+"""Granular proof verification through step-by-step unfolding.
 
-Extracts key claims from each reduction, generates proofs for each claim,
-and verifies each proof. Records which claims pass verification.
+This script unfolds reduction proofs into granular, verifiable steps and
+validates each step individually. The process:
+  1. Unfold: Extract atomic proof steps from the reduction
+  2. Prove: Generate rigorous proofs for each individual step
+  3. Verify: Check each proof for logical validity and completeness
+
+The goal is to validate reductions by ensuring every granular step is sound,
+rather than accepting the reduction as a monolithic whole.
+
+The model determines the appropriate granularity and can use sub-steps
+(e.g., 1, 2a, 2b, 3) to break down complex parts while combining simpler ones.
 
 Input CSV columns (required):
   - source_text
@@ -10,18 +19,17 @@ Input CSV columns (required):
   - reduction_full_text
 
 Output CSV columns (added):
-  - claims_json           # List of extracted claims
-  - proofs_json           # List of {claim, proof, verification} dicts
-  - correctness_score     # Fraction of claims that verified successfully
-  - num_claims
+  - proof_steps_json      # List of unfolded proof steps
+  - step_proofs_json      # List of {step, proof, verification} dicts
+  - correctness_score     # Fraction of steps that verified successfully
+  - num_steps
   - num_verified
 
 Usage:
   python examples/reduction_proof_verification.py \
     --toy \
     --input_csv karp.csv \
-    --output_csv verified_proofs.csv \
-    --num_claims 5
+    --output_csv verified_proofs.csv
 """
 
 from __future__ import annotations
@@ -37,8 +45,8 @@ from src.inference import Model, load_from_config
 
 
 @dataclass
-class ProofClaim:
-    """A single claim in a structured proof."""
+class ProofStep:
+    """A single granular step in an unfolded proof."""
     index: int
     text: str
     proof: str = ""
@@ -60,7 +68,7 @@ class ProofClaim:
         """Serialize to dictionary."""
         return {
             "index": self.index,
-            "claim": self.text,
+            "step": self.text,
             "proof": self.proof,
             "verification": {
                 "logically_valid": self.logically_valid,
@@ -72,16 +80,17 @@ class ProofClaim:
         }
 
 
-def create_claim_extraction_messages(
+def create_step_extraction_messages(
     source_text: str,
     target_text: str,
     reduction_full_text: str,
-    num_claims: int = 5,
 ) -> List[Dict[str, str]]:
-    """Create messages for extracting key claims from a reduction."""
+    """Create messages for unfolding a reduction into granular proof steps."""
     
-    system_message = """You are a complexity theory expert analyzing reduction proofs.
-Your task is to extract the key claims that together constitute a complete proof of the reduction."""
+    system_message = """You are a complexity theory expert unfolding reduction proofs.
+Your task is to break down the reduction into atomic, verifiable steps.
+Each step should be granular enough to prove independently (possibly using previously verified steps).
+You have flexibility in determining the appropriate level of granularity."""
 
     user_message = f"""**Source problem:**
 {source_text}
@@ -93,18 +102,32 @@ Your task is to extract the key claims that together constitute a complete proof
 {reduction_full_text}
 
 **Task:**
-Extract exactly {num_claims} key claims that together prove this reduction is correct.
+Unfold this reduction into granular, verifiable proof steps with appropriate detail.
+
+**Required Structure:**
+The steps should follow this logical progression:
+1. **Main idea**: State the high-level approach and key insight(s) of the reduction
+2. **Construction**: Describe what is constructed and identify any gadgets or auxiliary structures
+3. **Instance mapping**: Establish that the construction maps source instances to valid target instances
+4. **Forward direction**: Prove that source satisfiable implies target satisfiable
+5. **Reverse direction**: Prove that target satisfiable implies source satisfiable
+6. **Polynomial time**: Establish that the reduction runs in polynomial time
 
 **Guidelines:**
-- Each claim should be one clear, verifiable statement
-- Claims should build on each other logically
-- Typical structure: construction definition → polynomial-time → correctness (both directions)
-- Number them 1 through {num_claims}
+- Each step should be atomic and independently verifiable
+- Steps build on each other (later steps can reference earlier ones)
+- You may break down complex steps into sub-steps (e.g., 2a, 2b, 2c) when needed
+- You may combine simple related ideas into a single step
+- Avoid redundancy - each step should contribute new information
+- Use your judgment to determine the right granularity for this specific reduction
+- Number main steps 1, 2, 3, etc. and sub-steps as 2a, 2b, etc.
 
 **Format:**
-Output ONLY a numbered list, one claim per line:
-1. [First claim]
-2. [Second claim]
+Output ONLY a numbered list, one step per line:
+1. [First step]
+2a. [First part of second step]
+2b. [Second part of second step]
+3. [Third step]
 ...
 """
 
@@ -115,21 +138,22 @@ Output ONLY a numbered list, one claim per line:
 
 
 def create_proof_messages(
-    claim: ProofClaim,
+    step: ProofStep,
     source_text: str,
     target_text: str,
-    prior_claims: List[ProofClaim],
+    prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for proving a specific claim."""
+    """Create messages for proving a specific step."""
     
     system_message = """You are a complexity theory expert writing rigorous proofs.
-Provide clear, logically sound proofs that are complete yet concise."""
+Provide clear, logically sound proofs that are complete yet concise.
+IMPORTANT: Prove ONLY what this step states - do not prove the entire reduction."""
 
     prior_text = ""
-    if prior_claims:
-        prior_text = "\n**Previously proven claims:**\n"
-        for pc in prior_claims:
-            prior_text += f"{pc.index}. {pc.text}\n"
+    if prior_steps:
+        prior_text = "\n**Previously established steps:**\n"
+        for ps in prior_steps:
+            prior_text += f"{ps.index}. {ps.text}\n"
     
     user_message = f"""**Source problem:**
 {source_text}
@@ -137,15 +161,23 @@ Provide clear, logically sound proofs that are complete yet concise."""
 **Target problem:**
 {target_text}
 {prior_text}
-**Claim to prove (Claim {claim.index}):**
-{claim.text}
+**Step to prove (Step {step.index}):**
+{step.text}
 
 **Task:**
-Provide a rigorous but concise proof of this claim (3-8 sentences).
+Provide a rigorous but concise proof of THIS SPECIFIC STEP ONLY (3-8 sentences).
+
+**CRITICAL INSTRUCTIONS:**
+- Prove ONLY what this step states - nothing more, nothing less
+- This is a granular step, not the entire reduction
+- Focus exclusively on the specific statement in this step
+- If the step is about polynomial time, prove polynomial time
+- If the step is about a construction property, prove that property
+- If the step is about one direction of equivalence, prove only that direction
 
 **You may use:**
 - Definitions of the source and target problems
-- Previously proven claims (listed above)
+- Previously established steps (listed above)
 - Standard complexity theory facts
 
 **Format:**
@@ -159,22 +191,23 @@ Output ONLY the proof text, no preamble.
 
 
 def create_verification_messages(
-    claim: ProofClaim,
+    step: ProofStep,
     source_text: str,
     target_text: str,
-    prior_claims: List[ProofClaim],
+    prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for verifying a proof."""
+    """Create messages for verifying a proof step."""
     
     system_message = """You are a proof verification system.
 Be rigorous and adversarial - actively look for gaps, errors, or unjustified steps.
-A proof should only pass if it is genuinely sound and complete."""
+A proof should only pass if it is genuinely sound and complete.
+CRITICAL: Verify the proof proves EXACTLY what the step states - no more, no less."""
 
     prior_text = ""
-    if prior_claims:
-        prior_text = "\n**Available prior claims:**\n"
-        for pc in prior_claims:
-            prior_text += f"{pc.index}. {pc.text}\n"
+    if prior_steps:
+        prior_text = "\n**Available prior steps:**\n"
+        for ps in prior_steps:
+            prior_text += f"{ps.index}. {ps.text}\n"
     
     user_message = f"""**Source problem:**
 {source_text}
@@ -182,18 +215,23 @@ A proof should only pass if it is genuinely sound and complete."""
 **Target problem:**
 {target_text}
 {prior_text}
-**Claim:**
-{claim.text}
+**Proof step:**
+{step.text}
 
 **Proposed proof:**
-{claim.proof}
+{step.proof}
 
 **Task:**
 Verify this proof by answering three questions:
 
 (a) Is the proof logically valid (no logical errors)? YES or NO
 (b) Is the proof complete (no gaps or missing steps)? YES or NO  
-(c) Does the proof use only available premises (problem definitions + prior claims)? YES or NO
+(c) Does the proof use only available premises (problem definitions + prior steps)? YES or NO
+
+**CRITICAL CHECK:**
+- Does the proof address ALL parts of this step?
+- Does the proof prove ONLY what this step states (not the entire reduction)?
+- If the step is narrow and granular, does the proof stay focused on just that aspect?
 
 **Format:**
 Output EXACTLY in this format:
@@ -209,23 +247,26 @@ Issues: [If any answer is NO, briefly explain the specific problem. Otherwise wr
     ]
 
 
-def parse_claims(response_text: str) -> List[str]:
-    """Parse numbered list of claims from model response."""
-    claims = []
+def parse_steps(response_text: str) -> List[str]:
+    """Parse numbered list of proof steps from model response.
+    
+    Handles both simple numbering (1, 2, 3) and sub-step numbering (2a, 2b, 3c).
+    """
+    steps = []
     for line in response_text.strip().split('\n'):
         line = line.strip()
         if not line:
             continue
-        # Handle formats like "1. Claim" or "1) Claim" or just numbered lines
+        # Handle formats like "1. Step", "2a. Step", "1) Step", "3b) Step"
         if line[0].isdigit():
-            # Find the first non-digit, non-punctuation character
+            # Find the first non-digit, non-letter, non-punctuation character
             i = 0
-            while i < len(line) and (line[i].isdigit() or line[i] in '.-)]:'):
+            while i < len(line) and (line[i].isdigit() or line[i].isalpha() or line[i] in '.-)]:'):
                 i += 1
-            claim_text = line[i:].strip()
-            if claim_text:
-                claims.append(claim_text)
-    return claims
+            step_text = line[i:].strip()
+            if step_text:
+                steps.append(step_text)
+    return steps
 
 
 def parse_verification(response_text: str) -> Dict[str, any]:
@@ -272,62 +313,61 @@ def verify_reduction(
     source_text: str,
     target_text: str,
     reduction_text: str,
-    num_claims: int,
 ) -> Dict[str, any]:
-    """Verify a single reduction by extracting claims, proving, and verifying each."""
+    """Verify a reduction by unfolding into steps, proving each, and verifying each."""
     
     print_section_header(f"REDUCTION {row_index + 1}")
     print(f"Source: {source_text[:100]}...")
     print(f"Target: {target_text[:100]}...")
     print()
     
-    # Step 1: Extract claims
-    print("📋 STEP 1: Extracting key claims...")
+    # Phase 1: Unfold reduction into granular steps
+    print("📋 PHASE 1: Unfolding reduction into granular steps...")
     print_separator('-')
     
-    messages = create_claim_extraction_messages(
-        source_text, target_text, reduction_text, num_claims
+    messages = create_step_extraction_messages(
+        source_text, target_text, reduction_text
     )
     result = model.infer(
         messages[1]["content"],
-        session_id=f"extract-{row_index}",
+        session_id=f"unfold-{row_index}",
         system_prompt=messages[0]["content"],
     )
     
-    claim_texts = parse_claims(result["text"])
-    print(f"Extracted {len(claim_texts)} claims:\n")
-    for i, claim_text in enumerate(claim_texts, 1):
-        print(f"  {i}. {claim_text}")
+    step_texts = parse_steps(result["text"])
+    print(f"Unfolded into {len(step_texts)} steps:\n")
+    for i, step_text in enumerate(step_texts, 1):
+        print(f"  {i}. {step_text}")
     print()
     
-    # Step 2 & 3: Prove and verify each claim
-    claims = []
-    for i, claim_text in enumerate(claim_texts, 1):
-        claim = ProofClaim(index=i, text=claim_text)
+    # Phase 2 & 3: Prove and verify each step
+    steps = []
+    for i, step_text in enumerate(step_texts, 1):
+        step = ProofStep(index=i, text=step_text)
         
-        print_section_header(f"CLAIM {i}/{len(claim_texts)}")
-        print(f"Claim: {claim_text}\n")
+        print_section_header(f"STEP {i}/{len(step_texts)}")
+        print(f"Step: {step_text}\n")
         
-        # Generate proof
+        # Generate proof for this step
         print("✍️  Generating proof...")
         print_separator('-')
         proof_messages = create_proof_messages(
-            claim, source_text, target_text, claims[:i-1]
+            step, source_text, target_text, steps[:i-1]
         )
         proof_result = model.infer(
             proof_messages[1]["content"],
             session_id=f"prove-{row_index}-{i}",
             system_prompt=proof_messages[0]["content"],
         )
-        claim.proof = proof_result["text"].strip()
-        print(claim.proof)
+        step.proof = proof_result["text"].strip()
+        print(step.proof)
         print()
         
-        # Verify proof
+        # Verify the proof
         print("🔍 Verifying proof...")
         print_separator('-')
         verify_messages = create_verification_messages(
-            claim, source_text, target_text, claims[:i-1]
+            step, source_text, target_text, steps[:i-1]
         )
         verify_result = model.infer(
             verify_messages[1]["content"],
@@ -336,49 +376,48 @@ def verify_reduction(
         )
         
         verification = parse_verification(verify_result["text"])
-        claim.logically_valid = verification["logically_valid"]
-        claim.complete = verification["complete"]
-        claim.uses_only_premises = verification["uses_only_premises"]
-        claim.issues = verification["issues"]
+        step.logically_valid = verification["logically_valid"]
+        step.complete = verification["complete"]
+        step.uses_only_premises = verification["uses_only_premises"]
+        step.issues = verification["issues"]
         
         print(verify_result["text"])
         print()
         
-        # Summary
-        status = "✅ VERIFIED" if claim.verified else "❌ FAILED"
+        # Summary for this step
+        status = "✅ VERIFIED" if step.verified else "❌ FAILED"
         print(f"Status: {status}")
-        if not claim.verified:
-            print(f"Issues: {', '.join(claim.issues) if claim.issues else 'See verification output'}")
+        if not step.verified:
+            print(f"Issues: {'; '.join(step.issues) if step.issues else 'See verification output'}")
         print()
         
-        claims.append(claim)
+        steps.append(step)
     
     # Final summary
-    num_verified = sum(1 for c in claims if c.verified)
-    correctness_score = num_verified / len(claims) if claims else 0.0
+    num_verified = sum(1 for s in steps if s.verified)
+    correctness_score = num_verified / len(steps) if steps else 0.0
     
     print_section_header("SUMMARY")
-    print(f"Total claims: {len(claims)}")
+    print(f"Total steps: {len(steps)}")
     print(f"Verified: {num_verified}")
-    print(f"Failed: {len(claims) - num_verified}")
+    print(f"Failed: {len(steps) - num_verified}")
     print(f"Correctness score: {correctness_score:.2%}")
     print()
     
     return {
-        "claims": [c.text for c in claims],
-        "proofs": [c.to_dict() for c in claims],
-        "num_claims": len(claims),
+        "proof_steps": [s.text for s in steps],
+        "step_proofs": [s.to_dict() for s in steps],
+        "num_steps": len(steps),
         "num_verified": num_verified,
         "correctness_score": correctness_score,
     }
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Structured proof verification for reductions")
+    p = argparse.ArgumentParser(description="Granular proof verification through step-by-step unfolding")
     p.add_argument("--toy", action="store_true", help="Use tiny model for local testing (overrides config.ini)")
     p.add_argument("--input_csv", required=True, help="CSV with source_text,target_text,reduction_full_text")
     p.add_argument("--output_csv", default="verified_proofs.csv", help="Output CSV path")
-    p.add_argument("--num_claims", type=int, default=5, help="Number of claims to extract per reduction")
     
     # Model params
     p.add_argument("--temperature", type=float, help="Override temperature from config")
@@ -423,10 +462,10 @@ def main():
     
     model = load_from_config(**model_kwargs)
     
-    # Process rows
-    all_claims = []
-    all_proofs = []
-    all_num_claims = []
+    # Process rows - unfold, prove, and verify each reduction
+    all_steps = []
+    all_step_proofs = []
+    all_num_steps = []
     all_num_verified = []
     all_scores = []
     
@@ -437,19 +476,18 @@ def main():
             source_text=str(row["source_text"]),
             target_text=str(row["target_text"]),
             reduction_text=str(row["reduction_full_text"]),
-            num_claims=args.num_claims,
         )
         
-        all_claims.append(json.dumps(result["claims"]))
-        all_proofs.append(json.dumps(result["proofs"]))
-        all_num_claims.append(result["num_claims"])
+        all_steps.append(json.dumps(result["proof_steps"]))
+        all_step_proofs.append(json.dumps(result["step_proofs"]))
+        all_num_steps.append(result["num_steps"])
         all_num_verified.append(result["num_verified"])
         all_scores.append(result["correctness_score"])
     
     # Save results
-    df["claims_json"] = all_claims
-    df["proofs_json"] = all_proofs
-    df["num_claims"] = all_num_claims
+    df["proof_steps_json"] = all_steps
+    df["step_proofs_json"] = all_step_proofs
+    df["num_steps"] = all_num_steps
     df["num_verified"] = all_num_verified
     df["correctness_score"] = all_scores
     
