@@ -283,7 +283,7 @@ def _load_config() -> Dict[str, Any]:
     config = {}
     if parser.has_section("model"):
         config["model_id"] = parser.get("model", "model_id", fallback=None)
-        config["toy_model_id"] = parser.get("model", "toy_model_id", fallback="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        config["toy_model_id"] = parser.get("model", "toy_model_id", fallback=None)
     
     if parser.has_section("inference"):
         config["temperature"] = parser.getfloat("inference", "temperature", fallback=0.7)

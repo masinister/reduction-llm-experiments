@@ -13,8 +13,8 @@ Output CSV columns (added):
   - cot_tokens
 
 Usage:
+  # Model is sourced from config.ini (or use --toy for testing)
   python examples/reduction_cot_batch.py \
-    --toy \
     --input_csv data.csv \
     --output_csv cot_results.csv \
     --thinking on \
@@ -74,8 +74,7 @@ Please generate exactly {num_steps} synthetic CoT steps that an expert might hav
 
 def parse_args():
     p = argparse.ArgumentParser(description="Batch chain-of-thought generation for reductions")
-    p.add_argument("--model", help="Model id/path (or use --toy)")
-    p.add_argument("--toy", action="store_true", help="Use tiny model for local testing")
+    p.add_argument("--toy", action="store_true", help="Use tiny model for local testing (overrides config.ini)")
     p.add_argument("--input_csv", required=True, help="CSV with source_text,target_text,reduction_full_text")
     p.add_argument("--output_csv", default="cot_results.csv", help="Output CSV path")
 
@@ -95,9 +94,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if not args.model and not args.toy:
-        raise SystemExit("Error: Specify either --model MODEL_ID or --toy")
-
     # Load CSV
     path = os.path.expanduser(args.input_csv)
     if not os.path.exists(path):
@@ -111,10 +107,9 @@ def main():
 
     print(f"[cot-batch] Loaded {len(df)} rows from {path}")
 
-    # Initialize model - only pass explicitly provided CLI arguments
+    # Initialize model - model_id is sourced from config.ini
+    # Only pass explicitly provided CLI arguments as overrides
     model_kwargs = {"toy": args.toy}
-    if args.model is not None:
-        model_kwargs["model_id"] = args.model
     if args.tensor_parallel_size is not None:
         model_kwargs["tensor_parallel_size"] = args.tensor_parallel_size
     if args.temperature is not None:
