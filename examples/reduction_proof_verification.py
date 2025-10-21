@@ -88,8 +88,8 @@ def create_step_extraction_messages(
     """Create messages for unfolding a reduction into granular proof steps."""
     
     system_message = """You are a complexity theory expert unfolding reduction proofs.
-Your task is to break down the reduction into atomic, verifiable steps.
-Each step should be granular enough to prove independently (possibly using previously verified steps).
+Your task is to break down the reduction into atomic steps - both definitions/constructions 
+and claims that need proof. Distinguish between descriptive steps and claims to be proven.
 You have flexibility in determining the appropriate level of granularity."""
 
     user_message = f"""**Source problem:**
@@ -102,32 +102,45 @@ You have flexibility in determining the appropriate level of granularity."""
 {reduction_full_text}
 
 **Task:**
-Unfold this reduction into granular, verifiable proof steps with appropriate detail.
+Unfold this reduction into a complete sequence of steps with appropriate detail. 
+If appropriate, break any step into sub-steps (4a, 4b, etc.) if it improves clarity.
 
 **Required Structure:**
 The steps should follow this logical progression:
-1. **Main idea**: State the high-level approach and key insight(s) of the reduction
-2. **Construction**: Describe what is constructed and identify any gadgets or auxiliary structures
-3. **Instance mapping**: Establish that the construction maps source instances to valid target instances
-4. **Forward direction**: Prove that source satisfiable implies target satisfiable
-5. **Reverse direction**: Prove that target satisfiable implies source satisfiable
-6. **Polynomial time**: Establish that the reduction runs in polynomial time
+
+**Phase 1: Problem Setup**
+1. **Source problem**: Describe the source problem and its key properties
+2. **Target problem**: Describe the target problem and its key properties
+
+**Phase 2: Reduction Construction**
+3. **Main idea**: State the high-level approach and key insight(s) of the reduction
+4. **Construction**: Define what is constructed (transformation, gadgets, auxiliary structures)
+
+**Phase 3: Correctness Proof**
+5. **Instance mapping**: Prove the construction maps source instances to valid target instances
+6. **Forward direction**: Prove that source satisfiable implies target satisfiable
+7. **Reverse direction**: Prove that target satisfiable implies source satisfiable
+
+**Phase 4: Efficiency**
+8. **Polynomial time**: Prove the reduction runs in polynomial time
 
 **Guidelines:**
-- Each step should be atomic and independently verifiable
-- Steps build on each other (later steps can reference earlier ones)
-- You may break down complex steps into sub-steps (e.g., 2a, 2b, 2c) when needed
-- You may combine simple related ideas into a single step
-- Avoid redundancy - each step should contribute new information
-- Use your judgment to determine the right granularity for this specific reduction
-- Number main steps 1, 2, 3, etc. and sub-steps as 2a, 2b, etc.
+- **Descriptive steps** (problems, constructions, definitions) should state WHAT is defined
+- **Proof steps** (mapping, forward/reverse directions, polynomial time) should state claims to PROVE
+- Break down complex constructions or proofs into sub-steps (e.g., 4a, 4b, 6a, 6b)
+- You may combine very simple steps
+- Each step should be clear and independently understandable
+- Use your judgment to determine the right granularity
+- Number main steps 1, 2, 3, etc. and sub-steps as 1a, 1b, etc.
 
 **Format:**
-Output ONLY a numbered list, one step per line:
-1. [First step]
-2a. [First part of second step]
-2b. [Second part of second step]
-3. [Third step]
+Output ONLY a numbered list, one step per line. For example:
+1. [Source problem description]
+2. [Target problem description]
+3. [Main idea]
+4a. [First part of construction]
+4b. [Second part of construction]
+5. [Claim about instance mapping]
 ...
 """
 
@@ -143,11 +156,12 @@ def create_proof_messages(
     target_text: str,
     prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for proving a specific step."""
+    """Create messages for proving or explaining a specific step."""
     
-    system_message = """You are a complexity theory expert writing rigorous proofs.
-Provide clear, logically sound proofs that are complete yet concise.
-IMPORTANT: Prove ONLY what this step states - do not prove the entire reduction."""
+    system_message = """You are a complexity theory expert explaining reduction steps.
+For descriptive steps (problems, constructions, definitions): provide clear explanations.
+For proof steps (claims to be proven): provide rigorous, logically sound proofs.
+IMPORTANT: Address ONLY what this step states - do not prove the entire reduction."""
 
     prior_text = ""
     if prior_steps:
@@ -161,19 +175,24 @@ IMPORTANT: Prove ONLY what this step states - do not prove the entire reduction.
 **Target problem:**
 {target_text}
 {prior_text}
-**Step to prove (Step {step.index}):**
+**Current step (Step {step.index}):**
 {step.text}
 
 **Task:**
-Provide a rigorous but concise proof of THIS SPECIFIC STEP ONLY (3-8 sentences).
+Address THIS SPECIFIC STEP (3-8 sentences).
 
 **CRITICAL INSTRUCTIONS:**
-- Prove ONLY what this step states - nothing more, nothing less
-- This is a granular step, not the entire reduction
-- Focus exclusively on the specific statement in this step
-- If the step is about polynomial time, prove polynomial time
-- If the step is about a construction property, prove that property
-- If the step is about one direction of equivalence, prove only that direction
+- If this is a **descriptive step** (problem description, construction definition):
+  * Provide a clear, precise explanation or definition
+  * No proof is needed - just state what it is
+  
+- If this is a **proof step** (a claim to be proven):
+  * Provide a rigorous proof
+  * Prove ONLY what this step claims
+  * Focus exclusively on this specific claim
+  
+- Do NOT prove the entire reduction
+- Do NOT go beyond what this step asks for
 
 **You may use:**
 - Definitions of the source and target problems
@@ -181,7 +200,7 @@ Provide a rigorous but concise proof of THIS SPECIFIC STEP ONLY (3-8 sentences).
 - Standard complexity theory facts
 
 **Format:**
-Output ONLY the proof text, no preamble.
+Output ONLY the explanation or proof text, no preamble.
 """
 
     return [
@@ -196,12 +215,12 @@ def create_verification_messages(
     target_text: str,
     prior_steps: List[ProofStep],
 ) -> List[Dict[str, str]]:
-    """Create messages for verifying a proof step."""
+    """Create messages for verifying a step (explanation or proof)."""
     
-    system_message = """You are a proof verification system.
-Be rigorous and adversarial - actively look for gaps, errors, or unjustified steps.
-A proof should only pass if it is genuinely sound and complete.
-CRITICAL: Verify the proof proves EXACTLY what the step states - no more, no less."""
+    system_message = """You are a verification system for reduction steps.
+For descriptive steps: verify clarity, accuracy, and completeness of the explanation.
+For proof steps: be rigorous and adversarial - actively look for logical gaps or errors.
+CRITICAL: Verify EXACTLY what the step states - no more, no less."""
 
     prior_text = ""
     if prior_steps:
@@ -215,23 +234,30 @@ CRITICAL: Verify the proof proves EXACTLY what the step states - no more, no les
 **Target problem:**
 {target_text}
 {prior_text}
-**Proof step:**
+**Current step:**
 {step.text}
 
-**Proposed proof:**
+**Proposed explanation/proof:**
 {step.proof}
 
 **Task:**
-Verify this proof by answering three questions:
+Verify this step by answering three questions:
 
+**For descriptive steps (problem descriptions, construction definitions):**
+(a) Is the explanation clear and accurate? YES or NO
+(b) Is the explanation complete (covers all necessary details)? YES or NO
+(c) Does the explanation use only available information (prior steps, standard definitions)? YES or NO
+
+**For proof steps (claims to be proven):**
 (a) Is the proof logically valid (no logical errors)? YES or NO
-(b) Is the proof complete (no gaps or missing steps)? YES or NO  
+(b) Is the proof complete (no gaps or missing steps)? YES or NO
 (c) Does the proof use only available premises (problem definitions + prior steps)? YES or NO
 
 **CRITICAL CHECK:**
-- Does the proof address ALL parts of this step?
-- Does the proof prove ONLY what this step states (not the entire reduction)?
-- If the step is narrow and granular, does the proof stay focused on just that aspect?
+- Does this address ALL parts of the step?
+- Does this address ONLY what the step states (not the entire reduction)?
+- If descriptive: Is it a clear definition/explanation rather than a proof?
+- If a proof: Is it rigorous and complete?
 
 **Format:**
 Output EXACTLY in this format:
@@ -340,7 +366,7 @@ def verify_reduction(
         print(f"  {i}. {step_text}")
     print()
     
-    # Phase 2 & 3: Prove and verify each step
+    # Phase 2 & 3: Address and verify each step
     steps = []
     for i, step_text in enumerate(step_texts, 1):
         step = ProofStep(index=i, text=step_text)
@@ -348,8 +374,8 @@ def verify_reduction(
         print_section_header(f"STEP {i}/{len(step_texts)}")
         print(f"Step: {step_text}\n")
         
-        # Generate proof for this step
-        print("✍️  Generating proof...")
+        # Generate explanation or proof for this step
+        print("✍️  Addressing step...")
         print_separator('-')
         proof_messages = create_proof_messages(
             step, source_text, target_text, steps[:i-1]
@@ -363,8 +389,8 @@ def verify_reduction(
         print(step.proof)
         print()
         
-        # Verify the proof
-        print("🔍 Verifying proof...")
+        # Verify the step
+        print("🔍 Verifying step...")
         print_separator('-')
         verify_messages = create_verification_messages(
             step, source_text, target_text, steps[:i-1]
