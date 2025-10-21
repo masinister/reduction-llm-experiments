@@ -226,13 +226,14 @@ class Model:
         raw = outputs[0].outputs[0].text
         # Handle multiple thinking delimiter formats:
         # 1. Standard: <think>...</think>
-        # 2. gpt-oss: analysis...assistantFinal
+        # 2. gpt-oss: analysis...assistantfinal (case-insensitive)
         clean = raw
         if "</think>" in raw:
             clean = raw.split("</think>", 1)[1].strip()
-        elif "assistantFinal" in raw:
-            # gpt-oss format: split after assistantFinal marker
-            clean = raw.split("assistantFinal", 1)[1].strip()
+        elif "assistantfinal" in raw.lower():
+            # gpt-oss format: split after assistantfinal marker (case-insensitive)
+            marker_pos = raw.lower().find("assistantfinal")
+            clean = raw[marker_pos + len("assistantfinal"):].strip()
         else:
             clean = raw.strip()
         
