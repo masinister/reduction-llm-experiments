@@ -13,32 +13,39 @@
 set -euo pipefail
 
 echo "===== Proof Verification Job ====="
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURM_NODELIST"
-echo "GPUs: $SLURM_GPUS_ON_NODE"
+echo "Job ID: ${SLURM_JOB_ID:-n/a}"
+echo "Node: ${SLURM_NODELIST:-n/a}"
+echo "GPUs: ${SLURM_GPUS_ON_NODE:-n/a}"
 echo "Date: $(date)"
 echo "===================================="
 
-module load cuda/12.6.3/5fe76nu
-module load python/3.11.10
-source ~/venvs/reduction-llm/bin/activate
+# Cluster environment (adjust if needed)
+module load cuda/12.6.3/5fe76nu || true
+module load python/3.11.10 || true
+if [[ -d ~/venvs/reduction-llm ]]; then
+    source ~/venvs/reduction-llm/bin/activate
+fi
 
-export RAY_TMPDIR="/tmp/ray_${SLURM_JOB_ID}"
+export RAY_TMPDIR="/tmp/ray_${SLURM_JOB_ID:-$$}"
 mkdir -p "$RAY_TMPDIR"
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+# Use all 4 GPUs by default (adjust for your cluster)
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 
+# Inputs/outputs
 INPUT_CSV="${INPUT_CSV:-~/data/karp.csv}"
 OUTPUT_CSV="${OUTPUT_CSV:-~/results/verified_proofs_$(date +%Y%m%d_%H%M%S).csv}"
-NUM_CLAIMS="${NUM_CLAIMS:-5}"
 
-python examples/reduction_proof_verification.py \
+set -x
+python examples/reduction_verification.py \
+    --tensor_parallel_size 4 \
     --input_csv "$INPUT_CSV" \
-    --output_csv "$OUTPUT_CSV" \
-    --num_claims $NUM_CLAIMS
+    --output_csv "$OUTPUT_CSV"
+set +x
 
-rm -rf "$RAY_TMPDIR"
+rm -rf "$RAY_TMPDIR" || true
 
 echo ""
 echo "✅ Proof verification job completed at $(date)"
 echo "Results saved to: $OUTPUT_CSV"
+
