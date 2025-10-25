@@ -1,0 +1,16 @@
+{
+  "relies_on_ground_truth": true,
+  "reasons": [
+    "Ground truth tokens appear heavily in the candidate steps."
+  ],
+  "issues": [
+    {
+      "id": "global-ground-truth-overlap",
+      "title": "Possible ground-truth leakage",
+      "description": "Large lexical overlap between steps and ground truth.",
+      "severity": "medium",
+      "category": "ground-truth-leak",
+      "step_index": null
+    }
+  ]
+}
