@@ -8,6 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from vllm import LLM, SamplingParams
+from vllm.sampling_params import StructuredOutputsParams
 from transformers import AutoTokenizer
 
 
@@ -165,6 +166,7 @@ class Model:
         top_k: Optional[int] = None,
         max_tokens: Optional[int] = None,
         enable_thinking: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Run inference with optional session memory.
@@ -211,12 +213,20 @@ class Model:
         )
         
         # Generate
-        sampling = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-        )
+        sampling_kwargs: Dict[str, Any] = {
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "max_tokens": max_tokens,
+        }
+        # Enable structured outputs via JSON schema if provided (vLLM guided decoding)
+        if json_schema is not None:
+            # Use StructuredOutputsParams to enforce JSON schema
+            sampling_kwargs["structured_outputs"] = StructuredOutputsParams(json=json_schema)
+            # Lower temperature slightly to encourage adherence
+            sampling_kwargs["temperature"] = min(temperature, 0.3) if temperature is not None else 0.2
+
+        sampling = SamplingParams(**sampling_kwargs)
         
         start = time.time()
         outputs = self._llm.generate([input_text], sampling)
