@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:A100:4
 #SBATCH --mem=256G
 #SBATCH --time=8:00:00
 #SBATCH --output=logs/proof_verification_%j.out
@@ -35,6 +35,8 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 # Inputs/outputs
 INPUT_CSV="${INPUT_CSV:-$HOME/data/karp.csv}"
 OUTPUT_CSV="${OUTPUT_CSV:-$HOME/results/verified_proofs_$(date +%Y%m%d_%H%M%S).csv}"
+
+mkdir -p "$(dirname "$OUTPUT_CSV")"
 
 set -x
 python examples/reduction_refine.py \
