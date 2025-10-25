@@ -37,10 +37,11 @@ INPUT_CSV="${INPUT_CSV:-~/data/karp.csv}"
 OUTPUT_CSV="${OUTPUT_CSV:-~/results/verified_proofs_$(date +%Y%m%d_%H%M%S).csv}"
 
 set -x
-python examples/reduction_verification.py \
-    --tensor_parallel_size 4 \
-    --input_csv "$INPUT_CSV" \
-    --output_csv "$OUTPUT_CSV"
+python examples/reduction_refine.py \
+    --csv "$INPUT_CSV" \
+    --output-dir "$(dirname "$OUTPUT_CSV")" \
+    --max-iters "${MAX_ITERS:-6}" \
+    --use-real-model
 set +x
 
 rm -rf "$RAY_TMPDIR" || true
