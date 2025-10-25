@@ -33,8 +33,8 @@ mkdir -p "$RAY_TMPDIR"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 
 # Inputs/outputs
-INPUT_CSV="${INPUT_CSV:-~/data/karp.csv}"
-OUTPUT_CSV="${OUTPUT_CSV:-~/results/verified_proofs_$(date +%Y%m%d_%H%M%S).csv}"
+INPUT_CSV="${INPUT_CSV:-$HOME/data/karp.csv}"
+OUTPUT_CSV="${OUTPUT_CSV:-$HOME/results/verified_proofs_$(date +%Y%m%d_%H%M%S).csv}"
 
 set -x
 python examples/reduction_refine.py \
