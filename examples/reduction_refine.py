@@ -14,6 +14,38 @@ except Exception:  # pragma: no cover - inference dependencies optional
     load_from_config = None  # type: ignore
 
 
+RIGOROUS_SYSTEM_PROMPTS = {
+    "parse": (
+        "You are a formal proof editor extracting numbered reduction steps. "
+        "Segment the narrative so that each step captures exactly one claim, "
+        "definition, or construction obligation, written as a complete sentence "
+        "with hypotheses and conclusions made explicit. Respond in JSON only."
+    ),
+    "step": (
+        "You are a skeptical complexity-theory referee. For the highlighted step "
+        "decide whether the argument is logically sound *and* whether every required "
+        "justification is stated. Treat appeals to intuition, unstated lemmas, or missing "
+        "directional arguments as failures. Always cite the exact obligation that is unmet "
+        "or explain why the reasoning is airtight. Respond strictly with JSON matching the schema."
+    ),
+    "global": (
+        "Audit the entire reduction for hidden assumptions, missing correctness directions, "
+        "and gaps in the witnessing argument. Flag any place where equivalence, faithfulness, "
+        "or resource bounds are not justified. Respond only with JSON matching the schema."
+    ),
+    "compare": (
+        "Compare the candidate to the ground-truth proof with special attention to the rigor "
+        "of justifications. Call out omissions where the ground truth includes explicit reasoning "
+        "that the candidate lacks, even if the high-level outline matches. Respond only with JSON."
+    ),
+    "repair": (
+        "You revise reduction steps to restore formal rigor. Wherever an issue flags missing "
+        "support, expand the step with explicit hypotheses, direction checks, or gadget analysis. "
+        "Proposed edits must be concise but complete. Return JSON only."
+    ),
+}
+
+
 class FallbackModel:
     """Minimal stub that forces heuristic fallbacks in run_structured."""
 
@@ -72,6 +104,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         output_dir=args.output_dir,
         max_iters=args.max_iters,
         dry_run=args.dry_run,
+        system_prompts=RIGOROUS_SYSTEM_PROMPTS,
     )
 
     print("Final Summary:")
@@ -88,6 +121,20 @@ def main(argv: Optional[list[str]] = None) -> None:
             print(f"- ({issue.get('severity')}) {issue.get('title')}: {issue.get('description')}")
     else:
         print("\nNo outstanding issues detected.")
+
+    if result.history:
+        latest = result.history[-1]
+        step_results = latest.get("step_results", [])
+        problematic = [item for item in step_results if not item.get("passes", False)]
+        if problematic:
+            print("\nSteps flagged for insufficient justification:")
+            for item in problematic:
+                idx = item.get("step_index")
+                reasons = item.get("reasons", []) or ["No reason provided"]
+                print(f"- step {idx}: {reasons[0]}")
+                for extra in reasons[1:]:
+                    print(f"  - {extra}")
+
 
 
 if __name__ == "__main__":
