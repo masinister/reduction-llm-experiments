@@ -61,16 +61,23 @@ class ReductionRow:
     target_text: str
 
     @classmethod
-    def from_csv(cls, path: Path) -> "ReductionRow":
+    def load_all(cls, path: Path) -> list["ReductionRow"]:
+        rows: list[ReductionRow] = []
         with path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
-            first = next(reader)
-        return cls(
-            entry_key=first.get("entry_key", "unknown"),
-            reduction_full_text=first.get("reduction_full_text", ""),
-            source_text=first.get("source_text", ""),
-            target_text=first.get("target_text", ""),
-        )
+            for idx, record in enumerate(reader, start=1):
+                if not record:
+                    continue
+                entry_key = record.get("entry_key") or f"row-{idx}"
+                rows.append(
+                    cls(
+                        entry_key=entry_key,
+                        reduction_full_text=record.get("reduction_full_text", ""),
+                        source_text=record.get("source_text", ""),
+                        target_text=record.get("target_text", ""),
+                    )
+                )
+        return rows
 
 
 def load_model(*, use_real: bool, toy: bool) -> Any:
@@ -79,34 +86,12 @@ def load_model(*, use_real: bool, toy: bool) -> Any:
     return FallbackModel()
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Iteratively refine the first karp.csv reduction.")
-    parser.add_argument("--csv", default="karp.csv", help="Path to karp-style dataset (default: karp.csv)")
-    parser.add_argument("--output-dir", default="out/examples", help="Directory for pipeline artifacts")
-    parser.add_argument("--use-real-model", action="store_true", help="Load model via config.ini instead of stub")
-    parser.add_argument("--toy", action="store_true", help="When using a real model, load toy_model_id")
-    parser.add_argument("--max-iters", type=int, default=3, help="Maximum refinement iterations")
-    parser.add_argument("--dry-run", action="store_true", help="Skip applying edits (planning only)")
-    args = parser.parse_args(argv)
+def _safe_run_id(value: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in value)
+    return sanitized or "reduction"
 
-    row = ReductionRow.from_csv(Path(args.csv))
-    model = load_model(use_real=args.use_real_model, toy=args.toy)
 
-    print(f"Loaded reduction '{row.entry_key}'. Starting pipeline...\n")
-
-    result = run_pipeline(
-        model,
-        source_text=row.source_text,
-        target_text=row.target_text,
-        ground_truth=row.reduction_full_text,
-        candidate_blob=row.reduction_full_text,
-        run_id=row.entry_key,
-        output_dir=args.output_dir,
-        max_iters=args.max_iters,
-        dry_run=args.dry_run,
-        system_prompts=RIGOROUS_SYSTEM_PROMPTS,
-    )
-
+def _print_run_report(result: Any) -> None:
     print("Final Summary:")
     for key, value in result.final_summary.items():
         print(f"  {key}: {value}")
@@ -134,6 +119,52 @@ def main(argv: Optional[list[str]] = None) -> None:
                 print(f"- step {idx}: {reasons[0]}")
                 for extra in reasons[1:]:
                     print(f"  - {extra}")
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Iteratively refine the first karp.csv reduction.")
+    parser.add_argument("--csv", default="karp.csv", help="Path to karp-style dataset (default: karp.csv)")
+    parser.add_argument("--output-dir", default="out/examples", help="Directory for pipeline artifacts")
+    parser.add_argument("--use-real-model", action="store_true", help="Load model via config.ini instead of stub")
+    parser.add_argument("--toy", action="store_true", help="When using a real model, load toy_model_id")
+    parser.add_argument("--max-iters", type=int, default=3, help="Maximum refinement iterations")
+    parser.add_argument("--dry-run", action="store_true", help="Skip applying edits (planning only)")
+    parser.add_argument("--limit", type=int, help="Only process the first N rows from the CSV")
+    args = parser.parse_args(argv)
+
+    rows = ReductionRow.load_all(Path(args.csv))
+    if args.limit is not None and args.limit >= 0:
+        rows = rows[: args.limit]
+    if not rows:
+        raise ValueError("The CSV does not contain any reduction rows.")
+
+    model = load_model(use_real=args.use_real_model, toy=args.toy)
+
+    total = len(rows)
+    print(f"Loaded {total} reductions. Starting pipeline...\n")
+
+    for idx, row in enumerate(rows, start=1):
+        display_key = row.entry_key or f"row-{idx}"
+        run_id = _safe_run_id(f"{display_key}-{idx:04d}")
+        print(f"=== [{idx}/{total}] Reduction '{display_key}' ===\n")
+
+        result = run_pipeline(
+            model,
+            source_text=row.source_text,
+            target_text=row.target_text,
+            ground_truth=row.reduction_full_text,
+            candidate_blob=row.reduction_full_text,
+            run_id=run_id,
+            output_dir=args.output_dir,
+            max_iters=args.max_iters,
+            dry_run=args.dry_run,
+            system_prompts=RIGOROUS_SYSTEM_PROMPTS,
+        )
+
+        _print_run_report(result)
+
+        if idx != total:
+            print("\n")
 
 
 
