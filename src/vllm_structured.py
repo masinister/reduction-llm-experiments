@@ -109,6 +109,7 @@ def run_structured(
     retries: int = 1,
     retry_backoff_s: float = 0.6,
     validate: bool = True,
+    repair_on_failure: bool = True,
 ) -> StructuredResult:
     """Run a vLLM structured-output call and return a validated Python object.
 
@@ -161,7 +162,6 @@ def run_structured(
                 json_schema=json_schema,
                 **call_kwargs,
             )
-            latency = time.time() - start_time
             raw = result.get("raw_text", result.get("raw", ""))
             cleaned = result.get("text", raw).strip()
             tokens = int(result.get("tokens", 0))
@@ -174,6 +174,23 @@ def run_structured(
                 # second try: parse raw_text
                 parsed = _try_parse_json(raw)
 
+            repair_attempted = False
+            if parsed is None and repair_on_failure:
+                repair_attempted = True
+                repaired = _attempt_json_repair(
+                    model,
+                    failed_output=cleaned or raw,
+                    json_schema=json_schema,
+                    session_id=session_id,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                if repaired is not None:
+                    parsed, repair_raw, repair_cleaned, repair_tokens = repaired
+                    raw_text_accum = repair_raw
+                    cleaned_accum = repair_cleaned
+                    tokens += repair_tokens
+
             if parsed is None:
                 # If structured outputs were enforced at decode time vLLM sometimes returns structured payload
                 # embedded in raw, so attempt find via heuristics above. If still none, raise and retry.
@@ -183,9 +200,28 @@ def run_structured(
             if validate:
                 ok, err = _validate_schema(parsed, json_schema)
                 if not ok:
-                    raise StructuredCallError(f"JSON schema validation failed: {err}")
+                    if repair_on_failure and not repair_attempted:
+                        repair_attempted = True
+                        source_text = cleaned if cleaned else json.dumps(parsed, ensure_ascii=False)
+                        repaired = _attempt_json_repair(
+                            model,
+                            failed_output=source_text,
+                            json_schema=json_schema,
+                            session_id=session_id,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
+                        if repaired is not None:
+                            parsed, repair_raw, repair_cleaned, repair_tokens = repaired
+                            raw_text_accum = repair_raw
+                            cleaned_accum = repair_cleaned
+                            tokens += repair_tokens
+                            ok, err = _validate_schema(parsed, json_schema)
+                    if not ok:
+                        raise StructuredCallError(f"JSON schema validation failed: {err}")
 
             # success
+            latency = time.time() - start_time
             return StructuredResult(
                 data=parsed,
                 raw_text=raw_text_accum,
@@ -222,3 +258,68 @@ def run_structured(
         tokens=tokens,
         attempts=attempts,
     )
+
+
+def _attempt_json_repair(
+    model,
+    *,
+    failed_output: str,
+    json_schema: Dict[str, Any],
+    session_id: str,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+) -> Optional[Tuple[Dict[str, Any], str, str, int]]:
+    if not failed_output:
+        return None
+
+    repair_system_prompt = (
+        "You are a JSON repair assistant. Convert the provided text into a valid JSON object "
+        "that satisfies the schema. Respond with JSON only."
+    )
+    schema_text = json.dumps(json_schema, indent=2, ensure_ascii=False)
+    repair_user_prompt = (
+        "The previous model output failed JSON schema validation. Rewrite it so that it becomes "
+        "valid JSON matching the schema below. Keep the substantive content, but fix formatting "
+        "and missing fields as necessary. Output only the corrected JSON object.\n\n"
+        f"Schema:\n{schema_text}\n\n"
+        f"Failed output:\n{failed_output}\n"
+    )
+
+    repair_kwargs = {}
+    if temperature is not None:
+        repair_kwargs["temperature"] = min(temperature, 0.3)
+    else:
+        repair_kwargs["temperature"] = 0.0
+    if max_tokens is not None:
+        repair_kwargs["max_tokens"] = max_tokens
+
+    try:
+        result = model.infer(
+            prompt=repair_user_prompt,
+            session_id=f"{session_id}-repair",
+            system_prompt=repair_system_prompt,
+            enable_thinking=False,
+            json_schema=json_schema,
+            **repair_kwargs,
+        )
+    except Exception as exc:
+        logger.warning("JSON repair attempt failed: %s", exc)
+        return None
+
+    repair_raw = result.get("raw_text", result.get("raw", ""))
+    repair_cleaned = result.get("text", repair_raw).strip()
+    repair_tokens = int(result.get("tokens", 0))
+
+    parsed = _try_parse_json(repair_cleaned)
+    if parsed is None:
+        parsed = _try_parse_json(repair_raw)
+    if parsed is None:
+        logger.warning("JSON repair attempt returned non-parseable output.")
+        return None
+
+    ok, err = _validate_schema(parsed, json_schema)
+    if not ok:
+        logger.warning("JSON repair attempt failed schema validation: %s", err)
+        return None
+
+    return parsed, repair_raw, repair_cleaned, repair_tokens

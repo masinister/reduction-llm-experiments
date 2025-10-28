@@ -26,7 +26,11 @@ RIGOROUS_SYSTEM_PROMPTS = {
         "decide whether the argument is logically sound *and* whether every required "
         "justification is stated. Treat appeals to intuition, unstated lemmas, or missing "
         "directional arguments as failures. Always cite the exact obligation that is unmet "
-        "or explain why the reasoning is airtight. Respond strictly with JSON matching the schema."
+        "or explain why the reasoning is airtight. Respond strictly with a single JSON object "
+        "matching the schema; do not emit arrays or prose. The JSON must include the keys "
+        "step_index, step_text, classification, passes, confidence_score, reasons, and issues. "
+        "For example: {\"step_index\":0,\"step_text\":\"...\",\"classification\":\"claim\",\"passes\":false,\"confidence_score\":0.0,\"reasons\":[""detail""],\"issues\":[{\"id\":\"issue-1\",\"title\":\"...\",\"description\":\"...\",\"severity\":\"high\",\"category\":\"soundness\"}]} "
+        "Replace the placeholder values but keep the exact structure."
     ),
     "global": (
         "Audit the entire reduction for hidden assumptions, missing correctness directions, "
@@ -41,7 +45,9 @@ RIGOROUS_SYSTEM_PROMPTS = {
     "repair": (
         "You revise reduction steps to restore formal rigor. Wherever an issue flags missing "
         "support, expand the step with explicit hypotheses, direction checks, or gadget analysis. "
-        "Proposed edits must be concise but complete. Return JSON only."
+        "Proposed edits must be concise but complete. Return exactly one JSON object conforming to "
+        "the schema; never wrap the object in an array or add commentary. The object must contain "
+        "todo, edits, resolved_issue_ids, and optional notes."
     ),
 }
 

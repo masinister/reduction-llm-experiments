@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .schemas import STEP_EVAL_SCHEMA
@@ -67,14 +69,31 @@ def evaluate_step(
         return data, result
     except StructuredCallError as exc:
         logger.warning("Step evaluation failed for index %d: %s", index, exc)
+        extracted = _extract_reason_list(str(exc))
         fallback = {
             "step_index": index,
             "step_text": step_text,
             "classification": "other",
             "passes": False,
             "confidence_score": 0.0,
-            "reasons": ["model_failed_to_return_valid_json"],
-            "issues": [
+            "reasons": extracted or ["model_failed_to_return_valid_json"],
+        }
+        if extracted:
+            issues = []
+            for pos, detail in enumerate(extracted):
+                issues.append(
+                    {
+                        "id": f"step{index}-schema-detail-{pos}",
+                        "title": "Auto-captured critique",
+                        "description": detail,
+                        "severity": "high",
+                        "category": "soundness",
+                        "step_index": index,
+                    }
+                )
+            fallback["issues"] = issues
+        else:
+            fallback["issues"] = [
                 {
                     "id": f"step{index}-parsing-fail",
                     "title": "Model JSON parse failure",
@@ -83,8 +102,7 @@ def evaluate_step(
                     "category": "other",
                     "step_index": index,
                 }
-            ],
-        }
+            ]
         return fallback, None
 
 
@@ -121,3 +139,20 @@ def evaluate_steps(
 
 
 __all__ = ["evaluate_step", "evaluate_steps", "DEFAULT_STEP_SYSTEM_PROMPT"]
+
+
+def _extract_reason_list(message: str) -> List[str]:
+    match = re.search(r"\[(?:\s*'[^']*'(?:,\s*)?)+\s*\]", message)
+    if not match:
+        return []
+    try:
+        parsed = ast.literal_eval(match.group(0))
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    cleaned: List[str] = []
+    for item in parsed:
+        if isinstance(item, str):
+            cleaned.append(item.replace("\t", " ").strip())
+    return [text for text in cleaned if text]
