@@ -54,7 +54,14 @@ def repair_with_model(
         )
         data = dict(result.data)
         data["edits"] = _truncate_edits(data.get("edits", []), data.get("todo", []), max_edits)
-        return data, result
+        sanitized, dropped = _sanitize_repair_plan(data, issues)
+        if dropped:
+            logger.info(
+                "Repair plan sanitized: removed %d todos and %d edits with invalid issue ids.",
+                dropped["todos"],
+                dropped["edits"],
+            )
+        return sanitized, result
     except StructuredCallError as exc:
         logger.warning("Repair generation failed: %s", exc)
         fallback = {"todo": [], "edits": [], "resolved_issue_ids": [], "notes": str(exc)}
@@ -211,6 +218,52 @@ def _validate_edit(edit: Dict[str, Any]) -> Dict[str, Any]:
         "to_index": to_index,
         "raw": edit,
     }
+
+
+def _sanitize_repair_plan(
+    plan: Dict[str, Any],
+    issues: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    valid_issue_ids = {issue.get("id") for issue in issues if issue.get("id")}
+
+    removed_todos = 0
+    filtered_todo: List[Dict[str, Any]] = []
+    for entry in plan.get("todo", []) or []:
+        linked = [issue_id for issue_id in entry.get("linked_issue_ids", []) if issue_id in valid_issue_ids]
+        if not linked:
+            removed_todos += 1
+            continue
+        copy = dict(entry)
+        copy["linked_issue_ids"] = linked
+        filtered_todo.append(copy)
+    plan["todo"] = filtered_todo
+
+    removed_edits = 0
+    filtered_edits: List[Dict[str, Any]] = []
+    for edit in plan.get("edits", []) or []:
+        linked = [issue_id for issue_id in edit.get("linked_issue_ids", []) if issue_id in valid_issue_ids]
+        if not linked:
+            removed_edits += 1
+            continue
+        copy = dict(edit)
+        copy["linked_issue_ids"] = linked
+        filtered_edits.append(copy)
+    plan["edits"] = filtered_edits
+
+    resolved = [issue_id for issue_id in plan.get("resolved_issue_ids", []) if issue_id in valid_issue_ids]
+    plan["resolved_issue_ids"] = resolved
+
+    meta = plan.get("notes")
+    if removed_todos or removed_edits:
+        message = (
+            "Sanitized repair plan: dropped entries referencing unknown issues."
+            if not meta
+            else f"{meta}\nSanitized repair plan: dropped entries referencing unknown issues."
+        )
+        plan["notes"] = message
+
+    dropped = {"todos": removed_todos, "edits": removed_edits}
+    return plan, dropped
 
 
 __all__ = [

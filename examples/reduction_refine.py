@@ -47,7 +47,9 @@ RIGOROUS_SYSTEM_PROMPTS = {
         "support, expand the step with explicit hypotheses, direction checks, or gadget analysis. "
         "Proposed edits must be concise but complete. Return exactly one JSON object conforming to "
         "the schema; never wrap the object in an array or add commentary. The object must contain "
-        "todo, edits, resolved_issue_ids, and optional notes."
+        "todo, edits, resolved_issue_ids, and optional notes. Every todo and edit must cite one or "
+        "more linked_issue_ids drawn from the provided issue list; omit entries if you cannot tie "
+        "them to specific issues."
     ),
 }
 

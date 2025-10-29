@@ -4,6 +4,7 @@ import json
 import time
 import logging
 import hashlib
+import uuid
 from typing import Any, Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -152,11 +153,12 @@ def run_structured(
             if max_tokens is not None:
                 call_kwargs["max_tokens"] = max_tokens
 
+            call_session_id = f"{session_id}-{uuid.uuid4().hex[:8]}-attempt{attempt}"
             # instruct the model via system prompt; embed user prompt as single argument
             # model.infer already accepts json_schema and will create StructuredOutputsParams internally
             result = model.infer(
                 prompt=user_prompt,
-                session_id=session_id,
+                session_id=call_session_id,
                 system_prompt=system_prompt,
                 enable_thinking=enable_thinking,
                 json_schema=json_schema,
@@ -296,7 +298,7 @@ def _attempt_json_repair(
     try:
         result = model.infer(
             prompt=repair_user_prompt,
-            session_id=f"{session_id}-repair",
+            session_id=f"{session_id}-repair-{uuid.uuid4().hex[:8]}",
             system_prompt=repair_system_prompt,
             enable_thinking=False,
             json_schema=json_schema,
