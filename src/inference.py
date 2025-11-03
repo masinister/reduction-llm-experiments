@@ -166,7 +166,7 @@ class Model:
         top_k: Optional[int] = None,
         max_tokens: Optional[int] = None,
         enable_thinking: bool = False,
-        json_schema: Optional[Dict[str, Any]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Run inference with optional session memory.
@@ -180,6 +180,7 @@ class Model:
             top_k: Override default top_k
             max_tokens: Override default max_tokens
             enable_thinking: Enable thinking tokens (model-dependent)
+            response_format: vLLM structured output format dict with 'type' and 'schema' keys
             **kwargs: Additional metadata to store with result
         
         Returns:
@@ -187,6 +188,9 @@ class Model:
                 "text": cleaned output text,
                 "raw_text": raw model output,
                 "tokens": number of tokens generated,
+                "num_input_tokens": input token count (if available),
+                "num_output_tokens": output token count (if available),
+                "finish_reason": model finish reason (if available),
                 "latency_s": generation time in seconds,
                 "session_id": session identifier,
                 "thinking": whether thinking was enabled,
@@ -219,12 +223,12 @@ class Model:
             "top_k": top_k,
             "max_tokens": max_tokens,
         }
-        # Enable structured outputs via JSON schema if provided (vLLM guided decoding)
-        if json_schema is not None:
-            # Use StructuredOutputsParams to enforce JSON schema
-            sampling_kwargs["structured_outputs"] = StructuredOutputsParams(json=json_schema)
-            # Lower temperature slightly to encourage adherence
-            sampling_kwargs["temperature"] = min(temperature, 0.3) if temperature is not None else 0.2
+        # Enable structured outputs via response_format if provided (vLLM guided decoding)
+        if response_format is not None:
+            json_schema = response_format.get("schema")
+            if json_schema is not None:
+                # Use StructuredOutputsParams to enforce JSON schema at decode time
+                sampling_kwargs["structured_outputs"] = StructuredOutputsParams(json=json_schema)
 
         sampling = SamplingParams(**sampling_kwargs)
         
@@ -233,7 +237,8 @@ class Model:
         latency = time.time() - start
         
         # Extract and clean output
-        raw = outputs[0].outputs[0].text
+        output = outputs[0].outputs[0]
+        raw = output.text
         # Handle multiple thinking delimiter formats:
         # 1. Standard: <think>...</think>
         # 2. gpt-oss: analysis...assistantfinal (case-insensitive)
@@ -250,10 +255,19 @@ class Model:
         # Update session memory
         session.add_turn(user=prompt, assistant=clean, meta={"raw": raw})
         
+        # Extract vLLM-specific metadata if available
+        request_output = outputs[0]
+        num_input_tokens = getattr(request_output, "prompt_token_ids", None)
+        if num_input_tokens is not None:
+            num_input_tokens = len(num_input_tokens)
+        
         return {
             "text": clean,
             "raw_text": raw,
-            "tokens": len(outputs[0].outputs[0].token_ids),
+            "tokens": len(output.token_ids),
+            "num_input_tokens": num_input_tokens,
+            "num_output_tokens": len(output.token_ids),
+            "finish_reason": getattr(output, "finish_reason", None),
             "latency_s": latency,
             "session_id": session_id,
             "thinking": enable_thinking,

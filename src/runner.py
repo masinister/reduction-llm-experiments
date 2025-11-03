@@ -70,8 +70,6 @@ def run_pipeline(
     max_iters: int = 6,
     max_edits_per_iteration: int = 5,
     retries: int = 2,
-    dry_run: bool = False,
-    human_approval: bool = False,
 ) -> PipelineResult:
     run_identifier = run_id or _stable_id("run", str(int(time.time() * 1000)))
     artifacts_root = os.path.join(output_dir, run_identifier) if output_dir else None
@@ -109,7 +107,9 @@ def run_pipeline(
     history: List[Dict[str, Any]] = []
     last_step_results: List[Dict[str, Any]] = []
     last_issues: List[Dict[str, Any]] = []
-    stalled = 0
+    mechanical_stall_count = 0  # Counts iterations with no edits applied
+    semantic_stall_count = 0    # Counts iterations with edits but no issue reduction
+    previous_medium_high = -1   # Track issue count from previous iteration
     evaluation_matches_steps = False
 
     for iteration in range(1, max_iters + 1):
@@ -179,6 +179,12 @@ def run_pipeline(
             history.append(history_entry)
             break
 
+        # Debug: Check issues before repair
+        logger.debug("Issues before repair call: %d issues", len(issues))
+        for i, issue in enumerate(issues[:3]):  # Show first 3
+            logger.debug("  Issue %d keys: %s", i, list(issue.keys()))
+            logger.debug("    id=%s, title=%s", issue.get("id"), issue.get("title", "")[:50])
+
         repair_plan, repair_raw = repair_with_model(
             model,
             session_id=f"{run_identifier}-repair-{iteration}",
@@ -198,22 +204,6 @@ def run_pipeline(
                 _structured_result_to_dict(repair_raw),
             )
 
-        if dry_run:
-            history_entry["applied_edits"] = []
-            history_entry["skipped_edits"] = [
-                {"reason": "dry_run", "count": len(repair_plan.get("edits", []))}
-            ]
-            history.append(history_entry)
-            break
-
-        if _requires_human_approval(repair_plan.get("resolved_issue_ids", []), issues) and not human_approval:
-            history_entry["applied_edits"] = []
-            history_entry["skipped_edits"] = [
-                {"reason": "human_approval_required", "count": len(repair_plan.get("edits", []))}
-            ]
-            history.append(history_entry)
-            break
-
         new_steps, applied_edits, skipped_edits = apply_edits(steps, repair_plan.get("edits", []))
         history_entry["applied_edits"] = applied_edits
         history_entry["skipped_edits"] = skipped_edits
@@ -232,17 +222,36 @@ def run_pipeline(
 
         history.append(history_entry)
 
+        # Update stall detection logic
         if not applied_edits:
-            stalled += 1
+            # Mechanical stall: no edits were applied
+            mechanical_stall_count += 1
+            semantic_stall_count = 0  # Reset semantic stall
+            logger.info("Iteration %d: No edits applied (mechanical stall %d/2)", iteration, mechanical_stall_count)
         else:
-            stalled = 0
+            mechanical_stall_count = 0  # Reset mechanical stall
             evaluation_matches_steps = False
+            
+            # Check for semantic stall: edits applied but issues didn't decrease
+            if previous_medium_high >= 0 and medium_high >= previous_medium_high:
+                semantic_stall_count += 1
+                logger.info(
+                    "Iteration %d: Edits applied but medium/high issues unchanged (%d -> %d), semantic stall %d/2",
+                    iteration, previous_medium_high, medium_high, semantic_stall_count
+                )
+            else:
+                semantic_stall_count = 0  # Reset if we made progress
 
+        previous_medium_high = medium_high
         steps = new_steps
         artifacts.write_json(f"{iteration_dir}/post_edit_steps.json", {"steps": steps})
 
-        if stalled >= 2:
-            logger.info("No edits applied for two consecutive iterations; stopping early.")
+        # Stop if we've stalled mechanically or semantically for 2 consecutive iterations
+        if mechanical_stall_count >= 2:
+            logger.info("Stopping: No edits applied for two consecutive iterations (mechanical stall).")
+            break
+        if semantic_stall_count >= 2:
+            logger.info("Stopping: Issues not decreasing despite edits for two consecutive iterations (semantic stall).")
             break
     else:
         iteration = max_iters
@@ -327,11 +336,6 @@ def _structured_result_to_dict(result: StructuredResult) -> Dict[str, Any]:
         "attempts": result.attempts,
         "data": result.data,
     }
-
-
-def _requires_human_approval(resolved_ids: Sequence[str], issues: Sequence[Dict[str, Any]]) -> bool:
-    critical = {issue["id"] for issue in issues if issue.get("severity") == "high" and issue.get("category") == "soundness"}
-    return any(issue_id in critical for issue_id in resolved_ids)
 
 
 def _build_summary(step_results: Sequence[Dict[str, Any]], issues: Sequence[Dict[str, Any]]) -> Dict[str, Any]:

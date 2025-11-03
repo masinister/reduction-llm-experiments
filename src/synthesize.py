@@ -20,19 +20,31 @@ def synthesize_issues(
     """Merge issues from step/global/compare evaluations deterministically."""
     consolidated: Dict[Tuple[str, Any], Dict[str, Any]] = {}
 
+    # Debug logging: show raw issues from evaluators
+    logger.debug("Synthesizing issues from evaluators:")
+    logger.debug("  Step results: %d steps", len(list(step_results)))
     for step in step_results:
         idx = step.get("step_index")
-        for issue in step.get("issues", []):
+        step_issues = step.get("issues", [])
+        logger.debug("    Step %d: %d raw issues", idx, len(step_issues))
+        for issue in step_issues:
+            logger.debug("      Raw issue: %s", issue)
             normalized = _normalize_issue(issue, fallback_step=idx)
             key = (_dedupe_key(normalized), normalized.get("step_index"))
             consolidated[key] = _merge(consolidated.get(key), normalized)
 
-    for issue in global_result.get("issues", []):
+    global_issues = global_result.get("issues", [])
+    logger.debug("  Global evaluation: %d raw issues", len(global_issues))
+    for issue in global_issues:
+        logger.debug("    Global issue: %s", issue)
         normalized = _normalize_issue(issue, fallback_step=None)
         key = (_dedupe_key(normalized), normalized.get("step_index"))
         consolidated[key] = _merge(consolidated.get(key), normalized)
 
-    for issue in compare_result.get("issues", []):
+    compare_issues = compare_result.get("issues", [])
+    logger.debug("  Ground truth comparison: %d raw issues", len(compare_issues))
+    for issue in compare_issues:
+        logger.debug("    Compare issue: %s", issue)
         normalized = _normalize_issue(issue, fallback_step=None)
         key = (_dedupe_key(normalized), normalized.get("step_index"))
         consolidated[key] = _merge(consolidated.get(key), normalized)
@@ -52,6 +64,8 @@ def _normalize_issue(issue: Dict[str, Any], *, fallback_step) -> Dict[str, Any]:
     norm_text = f"{title}\n{description}".lower()
     norm_text = _collapse_whitespace(norm_text)
     issue_id = _stable_id("issue", f"{norm_text}|{step_index}")
+    
+    logger.debug("    Normalized: title=%s, step_index=%s -> issue_id=%s", title[:50], step_index, issue_id)
 
     normalized = {
         "id": issue_id,

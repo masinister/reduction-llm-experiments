@@ -23,6 +23,9 @@ class StructuredResult:
     latency_s: float
     tokens: int
     attempts: int
+    num_input_tokens: Optional[int] = None
+    num_output_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
 
 
 class StructuredCallError(RuntimeError):
@@ -30,50 +33,28 @@ class StructuredCallError(RuntimeError):
 
 
 def _try_parse_json(s: str) -> Optional[Any]:
-    """Try to parse a JSON object embedded in s.
-
-    Common model outputs sometimes include backticks, markdown, or text before/after JSON.
-    This function attempts:
-      - direct json.loads(s)
-      - find first occurrence of '{' and last '}' and parse substring
-      - fallback: search for the first top-level '[' or '{' and attempt parse
-    Returns parsed object or None.
+    """Parse JSON from string. With vLLM structured outputs, this should reliably succeed.
+    
+    Fallback extraction is kept minimal since response_format enforcement should
+    guarantee valid JSON at decode time.
     """
     s = s.strip()
     if not s:
         return None
-    # direct parse
+    
     try:
         return json.loads(s)
     except Exception:
         pass
 
-    # find first { or [ and last matching } or ]
+    # Minimal fallback: extract content between first { and last }
     first_curly = s.find("{")
-    first_square = s.find("[")
-    candidates = []
-    if first_curly != -1:
-        last_curly = s.rfind("}")
-        if last_curly != -1 and last_curly > first_curly:
-            candidates.append(s[first_curly : last_curly + 1])
-    if first_square != -1:
-        last_square = s.rfind("]")
-        if last_square != -1 and last_square > first_square:
-            candidates.append(s[first_square : last_square + 1])
-
-    for cand in candidates:
+    last_curly = s.rfind("}")
+    if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
         try:
-            return json.loads(cand)
+            return json.loads(s[first_curly : last_curly + 1])
         except Exception:
-            continue
-
-    # last resort: try to find lines that look like JSON and join them
-    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-    joined = "\n".join(lines[-40:])  # last 40 lines heuristics
-    try:
-        return json.loads(joined)
-    except Exception:
-        pass
+            pass
 
     return None
 
@@ -88,11 +69,26 @@ def _validate_schema(instance: Any, schema: Dict[str, Any]) -> Tuple[bool, Optio
 
 
 def _stable_id(prefix: str, text: str) -> str:
-    """Deterministic short id using sha1. Returns prefix-<6 hex>."""
+    """Deterministic short id using sha1. Returns prefix-<8 hex>."""
     h = hashlib.sha1()
     h.update(text.strip().encode("utf-8"))
     digest = h.hexdigest()[:8]
     return f"{prefix}-{digest}"
+
+
+# Cache for schema serialization to avoid repeated JSON dumps
+_SCHEMA_CACHE: Dict[str, str] = {}
+
+
+def _get_cached_schema_text(schema: Dict[str, Any]) -> str:
+    """Cache serialized schema by hash to avoid repeated JSON dumps."""
+    schema_str = json.dumps(schema, sort_keys=True, ensure_ascii=False)
+    schema_hash = hashlib.sha1(schema_str.encode("utf-8")).hexdigest()[:12]
+    
+    if schema_hash not in _SCHEMA_CACHE:
+        _SCHEMA_CACHE[schema_hash] = json.dumps(schema, indent=2, ensure_ascii=False)
+    
+    return _SCHEMA_CACHE[schema_hash]
 
 
 def run_structured(
@@ -115,22 +111,25 @@ def run_structured(
     """Run a vLLM structured-output call and return a validated Python object.
 
     Args:
-        model: instance of your Model wrapper (must implement infer(..., json_schema=...)).
+        model: instance of your Model wrapper (must implement infer(..., response_format=...)).
         system_prompt: system prompt string.
         user_prompt: user prompt string (main content).
         json_schema: JSON Schema dict describing expected output.
         session_id: session id for the Model (unique per logical call).
         temperature/top_p/top_k/max_tokens: optional overrides passed to model.infer.
         enable_thinking: pass to model.infer.
-        retries: number of attempts >= 1. On failure, will retry once with slightly higher max_tokens.
-        retry_backoff_s: seconds between attempts.
+        retries: number of attempts >= 1. Exponential backoff applied between retries.
+        retry_backoff_s: initial backoff time in seconds (grows exponentially).
         validate: if True, validate against schema and raise StructuredCallError on fatal failure.
+        repair_on_failure: if True, attempt automatic JSON repair on parse/validation failures.
 
     Returns:
-        StructuredResult with .data containing the parsed JSON object.
+        StructuredResult with .data containing the parsed JSON object, plus metadata
+        (latency, tokens, num_input_tokens, num_output_tokens, finish_reason, attempts).
 
     Raises:
-        StructuredCallError if the model fails to produce parseable JSON or validation fails.
+        StructuredCallError if the model fails to produce parseable JSON or validation fails
+        after all repair attempts and retries are exhausted.
     """
     attempts = 0
     start_time = time.time()
@@ -154,14 +153,13 @@ def run_structured(
                 call_kwargs["max_tokens"] = max_tokens
 
             call_session_id = f"{session_id}-{uuid.uuid4().hex[:8]}-attempt{attempt}"
-            # instruct the model via system prompt; embed user prompt as single argument
-            # model.infer already accepts json_schema and will create StructuredOutputsParams internally
+            # Pass schema via response_format for vLLM decode-time enforcement
             result = model.infer(
                 prompt=user_prompt,
                 session_id=call_session_id,
                 system_prompt=system_prompt,
                 enable_thinking=enable_thinking,
-                json_schema=json_schema,
+                response_format={"type": "json_object", "schema": json_schema},
                 **call_kwargs,
             )
             raw = result.get("raw_text", result.get("raw", ""))
@@ -169,6 +167,11 @@ def run_structured(
             tokens = int(result.get("tokens", 0))
             raw_text_accum = raw
             cleaned_accum = cleaned
+            
+            # Capture vLLM-specific metadata if available
+            num_input_tokens = result.get("num_input_tokens")
+            num_output_tokens = result.get("num_output_tokens")
+            finish_reason = result.get("finish_reason")
 
             # First try: direct JSON parse of cleaned text
             parsed = _try_parse_json(cleaned)
@@ -231,19 +234,23 @@ def run_structured(
                 latency_s=latency,
                 tokens=tokens,
                 attempts=attempts,
+                num_input_tokens=num_input_tokens,
+                num_output_tokens=num_output_tokens,
+                finish_reason=finish_reason,
             )
 
         except Exception as e:
             # keep the last exception and retry if attempts remain
             last_exception = e
+            backoff_time = retry_backoff_s * (1.5 ** (attempt - 1))
             logger.warning(
                 "Structured call attempt %d failed: %s. Retrying in %.2fs (retries left=%d).",
                 attempt,
                 str(e),
-                retry_backoff_s,
+                backoff_time,
                 max(0, retries - attempt),
             )
-            time.sleep(retry_backoff_s)
+            time.sleep(backoff_time)
 
     # all attempts failed
     msg = f"Structured output failed after {attempts} attempts. last_error={last_exception}"
@@ -278,11 +285,25 @@ def _attempt_json_repair(
         "You are a JSON repair assistant. Convert the provided text into a valid JSON object "
         "that satisfies the schema. Respond with JSON only."
     )
-    schema_text = json.dumps(json_schema, indent=2, ensure_ascii=False)
+    schema_text = _get_cached_schema_text(json_schema)
+    
+    # Extract schema shape hint
+    schema_type = json_schema.get("type", "object")
+    is_object = schema_type == "object"
+    required_keys = json_schema.get("required", []) if is_object else []
+    
+    shape_hint = ""
+    if is_object and required_keys:
+        shape_hint = (
+            f"\n\nIMPORTANT: The output MUST be a JSON object (not an array) with these required keys: "
+            f"{', '.join(required_keys)}. If the failed output is an array of strings, treat them as "
+            f"content for the 'reasons' field and construct the full object around them."
+        )
+    
     repair_user_prompt = (
         "The previous model output failed JSON schema validation. Rewrite it so that it becomes "
         "valid JSON matching the schema below. Keep the substantive content, but fix formatting "
-        "and missing fields as necessary. Output only the corrected JSON object.\n\n"
+        f"and missing fields as necessary. Output only the corrected JSON object.{shape_hint}\n\n"
         f"Schema:\n{schema_text}\n\n"
         f"Failed output:\n{failed_output}\n"
     )
@@ -301,7 +322,7 @@ def _attempt_json_repair(
             session_id=f"{session_id}-repair-{uuid.uuid4().hex[:8]}",
             system_prompt=repair_system_prompt,
             enable_thinking=False,
-            json_schema=json_schema,
+            response_format={"type": "json_object", "schema": json_schema},
             **repair_kwargs,
         )
     except Exception as exc:

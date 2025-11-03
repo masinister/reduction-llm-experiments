@@ -31,6 +31,12 @@ def repair_with_model(
     system_prompt: str = DEFAULT_REPAIR_SYSTEM_PROMPT,
 ) -> Tuple[Dict[str, Any], StructuredResult | None]:
     """Request repair plan from the model with edit limiting."""
+    # Debug logging: show input issues
+    logger.debug("Repair input: %d steps, %d issues", len(steps), len(issues))
+    for i, issue in enumerate(issues):
+        logger.debug("  Issue %d: id=%s, title=%s, severity=%s", 
+                    i, issue.get("id"), issue.get("title", "")[:40], issue.get("severity"))
+    
     payload = {
         "steps": steps,
         "issues": issues,
@@ -53,6 +59,14 @@ def repair_with_model(
             retries=retries,
         )
         data = dict(result.data)
+        
+        # Debug logging: show raw model output
+        logger.debug("Raw repair model output:")
+        logger.debug("  todo: %s", data.get("todo", []))
+        logger.debug("  edits: %s", data.get("edits", []))
+        logger.debug("  resolved_issue_ids: %s", data.get("resolved_issue_ids", []))
+        logger.debug("  notes: %s", data.get("notes", ""))
+        
         data["edits"] = _truncate_edits(data.get("edits", []), data.get("todo", []), max_edits)
         sanitized, dropped = _sanitize_repair_plan(data, issues)
         if dropped:
@@ -225,6 +239,7 @@ def _sanitize_repair_plan(
     issues: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     valid_issue_ids = {issue.get("id") for issue in issues if issue.get("id")}
+    logger.debug("Sanitizing repair plan against %d valid issue IDs", len(valid_issue_ids))
 
     removed_todos = 0
     filtered_todo: List[Dict[str, Any]] = []
@@ -232,6 +247,7 @@ def _sanitize_repair_plan(
         linked = [issue_id for issue_id in entry.get("linked_issue_ids", []) if issue_id in valid_issue_ids]
         if not linked:
             removed_todos += 1
+            logger.debug("  Removing todo (invalid IDs): %s", entry.get("linked_issue_ids", []))
             continue
         copy = dict(entry)
         copy["linked_issue_ids"] = linked
@@ -244,6 +260,8 @@ def _sanitize_repair_plan(
         linked = [issue_id for issue_id in edit.get("linked_issue_ids", []) if issue_id in valid_issue_ids]
         if not linked:
             removed_edits += 1
+            logger.debug("  Removing edit (invalid IDs): %s -> %s", 
+                        edit.get("linked_issue_ids", []), edit.get("content", "")[:50])
             continue
         copy = dict(edit)
         copy["linked_issue_ids"] = linked
