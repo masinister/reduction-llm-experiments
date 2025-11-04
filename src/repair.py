@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from .schemas import REPAIR_SCHEMA
 from .vllm_structured import StructuredCallError, StructuredResult, run_structured
+from .inference import get_max_tokens_from_config
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULT_REPAIR_SYSTEM_PROMPT = (
-    "You propose precise edits to repair the reduction. Output JSON only,"
-    " matching the schema."
+    "You are a reduction proof editor. For each issue, propose a concrete edit (insert, replace, delete, or move) "
+    "to fix it. Each edit must specify the step index and the new content. "
+    "If an issue requires adding new information, use 'replace' to expand an existing step or 'insert' to add a new step. "
+    "Always propose at least one edit per high-priority issue. "
+    "Consult the provided ground truth reduction to guide your fixes and ensure the candidate aligns with it. "
+    "Output only valid JSON matching the schema."
 )
 
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -24,26 +29,51 @@ def repair_with_model(
     session_id: str,
     steps: List[str],
     issues: List[Dict[str, Any]],
+    context: Mapping[str, Any] | None = None,
     retries: int = 2,
     temperature: float | None = 0.0,
-    max_tokens: int | None = 1024,
+    max_tokens: int | None = None,
     max_edits: int = 5,
     system_prompt: str = DEFAULT_REPAIR_SYSTEM_PROMPT,
 ) -> Tuple[Dict[str, Any], StructuredResult | None]:
     """Request repair plan from the model with edit limiting."""
+
+    if max_tokens is None:
+        max_tokens = get_max_tokens_from_config()
+
     # Debug logging: show input issues
     logger.debug("Repair input: %d steps, %d issues", len(steps), len(issues))
     for i, issue in enumerate(issues):
-        logger.debug("  Issue %d: id=%s, title=%s, severity=%s", 
-                    i, issue.get("id"), issue.get("title", "")[:40], issue.get("severity"))
-    
+        logger.debug(
+            "  Issue %d: id=%s, title=%s, severity=%s",
+            i,
+            issue.get("id"),
+            issue.get("title", "")[:40],
+            issue.get("severity"),
+        )
+
     payload = {
         "steps": steps,
         "issues": issues,
         "max_edits": max_edits,
     }
+
+    if context:
+        payload["ground_truth"] = context.get("ground_truth", "")
+        payload["source_text"] = context.get("source_text", "")
+        payload["target_text"] = context.get("target_text", "")
+
     user_prompt = (
-        "Propose repairs for the reduction. Respect max_edits and return only JSON.\n\n"
+        "Review the reduction steps, issues, and ground truth below. For each issue (especially high-priority ones), "
+        "propose a concrete edit to address it:\n"
+        "- First, check whether the ground_truth exhibits the same issue.\n"
+        "- If the ground_truth resolves it, summarize how and adapt that reasoning into the candidate.\n"
+        "- Use 'replace' to improve or expand an existing step when refining text.\n"
+        "- Use 'insert' to add a new step at a specific position when introducing missing arguments.\n"
+        "- Use 'delete' only when a step is redundant or contradicted by the ground truth.\n"
+        "- Include 'linked_issue_ids' so each edit references the issues it addresses.\n"
+        "- Do NOT restate the issue description; write the missing proof content.\n"
+        f"- Maximum {max_edits} edits allowed.\n\n"
         f"Payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n"
     )
 
@@ -257,15 +287,24 @@ def _sanitize_repair_plan(
     removed_edits = 0
     filtered_edits: List[Dict[str, Any]] = []
     for edit in plan.get("edits", []) or []:
-        linked = [issue_id for issue_id in edit.get("linked_issue_ids", []) if issue_id in valid_issue_ids]
-        if not linked:
-            removed_edits += 1
-            logger.debug("  Removing edit (invalid IDs): %s -> %s", 
-                        edit.get("linked_issue_ids", []), edit.get("content", "")[:50])
-            continue
-        copy = dict(edit)
-        copy["linked_issue_ids"] = linked
-        filtered_edits.append(copy)
+        linked_ids = edit.get("linked_issue_ids", [])
+        if linked_ids:
+            # If edit has linked_issue_ids, validate and filter them
+            linked = [issue_id for issue_id in linked_ids if issue_id in valid_issue_ids]
+            if not linked:
+                # All provided IDs were invalid - skip this edit
+                removed_edits += 1
+                logger.debug("  Removing edit (all IDs invalid): %s -> %s", 
+                            linked_ids, edit.get("content", "")[:50])
+                continue
+            copy = dict(edit)
+            copy["linked_issue_ids"] = linked
+            filtered_edits.append(copy)
+        else:
+            # No linked_issue_ids provided - keep the edit anyway (it's optional)
+            logger.debug("  Keeping edit without linked_issue_ids: op=%s, index=%s", 
+                        edit.get("op"), edit.get("index"))
+            filtered_edits.append(dict(edit))
     plan["edits"] = filtered_edits
 
     resolved = [issue_id for issue_id in plan.get("resolved_issue_ids", []) if issue_id in valid_issue_ids]

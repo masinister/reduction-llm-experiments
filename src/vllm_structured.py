@@ -32,6 +32,46 @@ class StructuredCallError(RuntimeError):
     """Raised when structured output could not be obtained or validated."""
 
 
+def _strip_thinking_markers(s: str) -> str:
+    """Strip thinking/reasoning prefixes and extract actual JSON content."""
+    s = s.strip()
+
+    markers = [
+        "assistantfinal",
+        "assistant",
+        "final",
+        "json",
+        "output",
+    ]
+
+    for marker in markers:
+        idx = s.lower().rfind(marker)
+        if idx != -1:
+            s = s[idx + len(marker):].strip()
+            break
+
+    first_curly = s.find("{")
+    if first_curly >= 0:
+        s = s[first_curly:]
+
+    return s.strip()
+
+
+def _normalize_json_like_text(s: str) -> str:
+    """Normalize common unicode punctuation so json.loads has a better chance."""
+    replacements = {
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2013": "-",
+        "\u2014": "-",
+    }
+    for src, dest in replacements.items():
+        s = s.replace(src, dest)
+    return s
+
+
 def _try_parse_json(s: str) -> Optional[Any]:
     """Parse JSON from string. With vLLM structured outputs, this should reliably succeed.
     
@@ -41,6 +81,10 @@ def _try_parse_json(s: str) -> Optional[Any]:
     s = s.strip()
     if not s:
         return None
+    
+    # First, strip any thinking/reasoning markers
+    s = _strip_thinking_markers(s)
+    s = _normalize_json_like_text(s)
     
     try:
         return json.loads(s)
@@ -52,7 +96,8 @@ def _try_parse_json(s: str) -> Optional[Any]:
     last_curly = s.rfind("}")
     if first_curly != -1 and last_curly != -1 and last_curly > first_curly:
         try:
-            return json.loads(s[first_curly : last_curly + 1])
+            candidate = _normalize_json_like_text(s[first_curly : last_curly + 1])
+            return json.loads(candidate)
         except Exception:
             pass
 
@@ -178,6 +223,14 @@ def run_structured(
             if parsed is None:
                 # second try: parse raw_text
                 parsed = _try_parse_json(raw)
+                
+            # Log raw output when parsing fails for debugging
+            if parsed is None:
+                logger.warning(
+                    "JSON parsing failed for session %s. Raw output (first 500 chars): %s",
+                    call_session_id,
+                    raw[:500] if raw else cleaned[:500]
+                )
 
             repair_attempted = False
             if parsed is None and repair_on_failure:
@@ -337,7 +390,10 @@ def _attempt_json_repair(
     if parsed is None:
         parsed = _try_parse_json(repair_raw)
     if parsed is None:
-        logger.warning("JSON repair attempt returned non-parseable output.")
+        logger.warning(
+            "JSON repair attempt returned non-parseable output. Raw (first 500 chars): %s",
+            repair_raw[:500] if repair_raw else repair_cleaned[:500]
+        )
         return None
 
     ok, err = _validate_schema(parsed, json_schema)

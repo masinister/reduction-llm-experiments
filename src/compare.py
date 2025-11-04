@@ -7,14 +7,26 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .schemas import GT_COMPARE_SCHEMA
 from .vllm_structured import StructuredCallError, StructuredResult, run_structured
+from .inference import get_max_tokens_from_config
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULT_COMPARE_SYSTEM_PROMPT = (
-    "Compare the candidate reduction with the provided ground truth."
-    " Respond only in JSON matching the schema."
+    "Compare the candidate reduction with the provided ground truth. "
+    "In issue descriptions, state which step differs and what specific content from ground truth should be added. "
+    "Respond only in JSON matching the schema."
 )
+
+_MAX_TEXT_CHARS = 2000
+_MAX_STEPS = 20
+
+
+def _truncate_text(text: str, limit: int = _MAX_TEXT_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "... [truncated]"
 
 
 def compare_to_ground_truth(
@@ -25,13 +37,24 @@ def compare_to_ground_truth(
     steps: List[str],
     retries: int = 2,
     temperature: float | None = 0.0,
-    max_tokens: int | None = 1024,
+    max_tokens: int | None = None,
     system_prompt: str = DEFAULT_COMPARE_SYSTEM_PROMPT,
 ) -> Tuple[Dict[str, Any], Optional[StructuredResult]]:
+    """Compare candidate to ground truth.
+    
+    Args:
+        max_tokens: Maximum tokens for response. If None, loads from config.ini
+    """
+    if max_tokens is None:
+        max_tokens = get_max_tokens_from_config()
     """Run ground-truth comparison with fallback diff heuristics."""
+    truncated_gt = _truncate_text(context.get("ground_truth", ""))
+    candidate_steps = list(steps[:_MAX_STEPS])
+    if len(steps) > _MAX_STEPS:
+        candidate_steps.append(f"... [truncated {len(steps) - _MAX_STEPS} additional steps]")
     payload = {
-        "ground_truth": context.get("ground_truth", ""),
-        "candidate_steps": steps,
+        "ground_truth": truncated_gt,
+        "candidate_steps": candidate_steps,
     }
     user_prompt = (
         "Compare the candidate reduction to the ground-truth description.\n"

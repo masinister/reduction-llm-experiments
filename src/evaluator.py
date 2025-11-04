@@ -8,13 +8,18 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .schemas import STEP_EVAL_SCHEMA
 from .vllm_structured import StructuredCallError, StructuredResult, run_structured
+from .inference import get_max_tokens_from_config
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULT_STEP_SYSTEM_PROMPT = (
     "You are a strict formal reduction evaluator. "
-    "Respond only with JSON that matches the provided schema."
+    "In issue descriptions, be specific about WHAT is missing and WHAT should be added. "
+    "Example: Instead of 'missing justification', write 'Missing explanation of how variable x maps to clauses C1, C2, C3'. "
+    "You MUST respond with ONLY valid JSON that matches the provided schema. "
+    "Do NOT include any prefixes like 'analysis', 'assistant', or any explanatory text. "
+    "Output ONLY the raw JSON object starting with { and ending with }."
 )
 
 
@@ -27,9 +32,16 @@ def evaluate_step(
     index: int,
     retries: int = 2,
     temperature: float | None = 0.0,
-    max_tokens: int | None = 512,
+    max_tokens: int | None = None,
     system_prompt: str = DEFAULT_STEP_SYSTEM_PROMPT,
 ) -> Tuple[Dict[str, Any], Optional[StructuredResult]]:
+    """Evaluate a single step, returning parsed data and raw result.
+    
+    Args:
+        max_tokens: Maximum tokens for response. If None, loads from config.ini
+    """
+    if max_tokens is None:
+        max_tokens = get_max_tokens_from_config()
     """Evaluate a single step, returning parsed data and raw result."""
     step_text = steps[index] if 0 <= index < len(steps) else ""
 
@@ -44,6 +56,7 @@ def evaluate_step(
     }
     user_prompt = (
         "Evaluate the highlighted step within the reduction.\n"
+        "For issues: state what specific content is missing and should be added.\n"
         "Return JSON that conforms to the schema.\n\n"
         f"Payload:\n{json.dumps(user_payload, indent=2, ensure_ascii=False)}\n"
     )
@@ -114,10 +127,16 @@ def evaluate_steps(
     steps: List[str],
     retries: int = 2,
     temperature: float | None = 0.0,
-    max_tokens: int | None = 512,
+    max_tokens: int | None = None,
     system_prompt: str = DEFAULT_STEP_SYSTEM_PROMPT,
 ) -> Tuple[List[Dict[str, Any]], List[StructuredResult]]:
-    """Evaluate all steps sequentially."""
+    """Evaluate all steps sequentially.
+    
+    Args:
+        max_tokens: Maximum tokens for response. If None, loads from config.ini
+    """
+    if max_tokens is None:
+        max_tokens = get_max_tokens_from_config()
     parsed: List[Dict[str, Any]] = []
     raw_results: List[StructuredResult] = []
     for idx in range(len(steps)):

@@ -7,14 +7,34 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .schemas import GLOBAL_EVAL_SCHEMA
 from .vllm_structured import StructuredCallError, StructuredResult, run_structured
+from .inference import get_max_tokens_from_config
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULT_GLOBAL_SYSTEM_PROMPT = (
-    "You are verifying whether the whole reduction relies on hidden assumptions or"
-    " leaks the target ground truth. Respond only with JSON that matches the schema."
+    "You are verifying whether the whole reduction relies on hidden assumptions or "
+    "leaks the target ground truth. "
+    "In issue descriptions, specify which steps leak information and what should be removed or changed. "
+    "Respond only with JSON that matches the schema."
 )
+
+_MAX_TEXT_CHARS = 2000
+_MAX_STEPS = 20
+
+
+def _truncate_text(text: str, limit: int = _MAX_TEXT_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "... [truncated]"
+
+
+def _truncate_steps(steps: List[str], limit: int = _MAX_STEPS) -> List[str]:
+    subset = list(steps[:limit])
+    if len(steps) > limit:
+        subset.append(f"... [truncated {len(steps) - limit} additional steps]")
+    return subset
 
 
 def run_global_evaluation(
@@ -25,15 +45,22 @@ def run_global_evaluation(
     steps: List[str],
     retries: int = 2,
     temperature: float | None = 0.0,
-    max_tokens: int | None = 1024,
+    max_tokens: int | None = None,
     system_prompt: str = DEFAULT_GLOBAL_SYSTEM_PROMPT,
 ) -> Tuple[Dict[str, Any], Optional[StructuredResult]]:
+    """Run global evaluation.
+    
+    Args:
+        max_tokens: Maximum tokens for response. If None, loads from config.ini
+    """
+    if max_tokens is None:
+        max_tokens = get_max_tokens_from_config()
     """Run the global evaluation structured call with heuristics fallback."""
     payload = {
-        "source_text": context.get("source_text", ""),
-        "target_text": context.get("target_text", ""),
-        "ground_truth": context.get("ground_truth", ""),
-        "steps": steps,
+        "source_text": _truncate_text(context.get("source_text", "")),
+        "target_text": _truncate_text(context.get("target_text", "")),
+        "ground_truth": _truncate_text(context.get("ground_truth", "")),
+        "steps": _truncate_steps(steps),
     }
     user_prompt = (
         "Assess whether the reduction relies on the ground truth or has global issues.\n"

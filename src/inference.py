@@ -327,6 +327,16 @@ def _load_config() -> Dict[str, Any]:
     return config
 
 
+def get_max_tokens_from_config() -> int:
+    """Get max_tokens setting from config.ini.
+    
+    Returns:
+        max_tokens value from config, or 8096 as fallback
+    """
+    config = _load_config()
+    return config.get("max_tokens", 8096)
+
+
 def load_from_config(toy: bool = False, **kwargs) -> Model:
     """Load model using settings from config.ini.
     

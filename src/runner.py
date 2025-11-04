@@ -190,9 +190,10 @@ def run_pipeline(
             session_id=f"{run_identifier}-repair-{iteration}",
             steps=steps,
             issues=issues,
+            context=context,
             retries=retries,
             temperature=0.0,
-            max_tokens=1024,
+            max_tokens=None,
             max_edits=max_edits_per_iteration,
             system_prompt=prompts["repair"],
         )
