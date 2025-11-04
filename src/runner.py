@@ -335,6 +335,8 @@ def _structured_result_to_dict(result: StructuredResult) -> Dict[str, Any]:
         "latency_s": result.latency_s,
         "tokens": result.tokens,
         "attempts": result.attempts,
+        "reasoning_text": result.reasoning_text,
+        "reasoning_tokens": result.reasoning_tokens,
         "data": result.data,
     }
 

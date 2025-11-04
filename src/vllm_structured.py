@@ -26,6 +26,8 @@ class StructuredResult:
     num_input_tokens: Optional[int] = None
     num_output_tokens: Optional[int] = None
     finish_reason: Optional[str] = None
+    reasoning_text: Optional[str] = None
+    reasoning_tokens: Optional[int] = None
 
 
 class StructuredCallError(RuntimeError):
@@ -181,6 +183,8 @@ def run_structured(
     last_exception: Optional[Exception] = None
     raw_text_accum = ""
     cleaned_accum = ""
+    reasoning_accum: Optional[str] = None
+    reasoning_tokens: Optional[int] = None
     tokens = 0
 
     # ensure at least one try
@@ -208,7 +212,15 @@ def run_structured(
                 **call_kwargs,
             )
             raw = result.get("raw_text", result.get("raw", ""))
-            cleaned = result.get("text", raw).strip()
+            reasoning_text = result.get("reasoning_content")
+            if reasoning_text:
+                reasoning_accum = reasoning_text
+            reasoning_tokens = result.get("reasoning_tokens", reasoning_tokens)
+
+            cleaned_source = result.get("content") or result.get("text") or ""
+            if not cleaned_source and isinstance(reasoning_text, str):
+                cleaned_source = reasoning_text
+            cleaned = str(cleaned_source).strip()
             tokens = int(result.get("tokens", 0))
             raw_text_accum = raw
             cleaned_accum = cleaned
@@ -220,6 +232,8 @@ def run_structured(
 
             # First try: direct JSON parse of cleaned text
             parsed = _try_parse_json(cleaned)
+            if parsed is None and isinstance(reasoning_text, str):
+                parsed = _try_parse_json(reasoning_text)
             if parsed is None:
                 # second try: parse raw_text
                 parsed = _try_parse_json(raw)
@@ -247,6 +261,7 @@ def run_structured(
                     parsed, repair_raw, repair_cleaned, repair_tokens = repaired
                     raw_text_accum = repair_raw
                     cleaned_accum = repair_cleaned
+                    reasoning_accum = result.get("reasoning_content", reasoning_accum)
                     tokens += repair_tokens
 
             if parsed is None:
@@ -290,6 +305,8 @@ def run_structured(
                 num_input_tokens=num_input_tokens,
                 num_output_tokens=num_output_tokens,
                 finish_reason=finish_reason,
+                reasoning_text=reasoning_accum,
+                reasoning_tokens=reasoning_tokens,
             )
 
         except Exception as e:
@@ -319,6 +336,8 @@ def run_structured(
         latency_s=time.time() - start_time,
         tokens=tokens,
         attempts=attempts,
+        reasoning_text=reasoning_accum,
+        reasoning_tokens=reasoning_tokens,
     )
 
 

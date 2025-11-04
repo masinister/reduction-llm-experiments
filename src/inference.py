@@ -238,32 +238,63 @@ class Model:
         
         # Extract and clean output
         output = outputs[0].outputs[0]
-        raw = output.text
-        # Handle multiple thinking delimiter formats:
-        # 1. Standard: <think>...</think>
-        # 2. gpt-oss: analysis...assistantfinal (case-insensitive)
-        clean = raw
-        if "</think>" in raw:
-            clean = raw.split("</think>", 1)[1].strip()
-        elif "assistantfinal" in raw.lower():
-            # gpt-oss format: split after assistantfinal marker (case-insensitive)
-            marker_pos = raw.lower().find("assistantfinal")
-            clean = raw[marker_pos + len("assistantfinal"):].strip()
+
+        def _strip_think_markers(text: str) -> str:
+            if not text:
+                return ""
+            lowered = text.lower()
+            if "</think>" in text:
+                return text.split("</think>", 1)[1].strip()
+            if "assistantfinal" in lowered:
+                pos = lowered.find("assistantfinal")
+                return text[pos + len("assistantfinal"):].strip()
+            return text.strip()
+
+        raw_generation = getattr(output, "text", "") or ""
+        reasoning_content = getattr(output, "reasoning_content", None)
+        content_field = getattr(output, "content", None)
+
+        if isinstance(content_field, list):
+            content_candidate = "\n".join(str(item) for item in content_field)
+        elif content_field is not None:
+            content_candidate = str(content_field)
         else:
-            clean = raw.strip()
+            content_candidate = raw_generation
+
+        clean = _strip_think_markers(content_candidate)
+        if not clean and isinstance(reasoning_content, str):
+            clean = reasoning_content.strip()
+
+        raw = raw_generation
+        if isinstance(reasoning_content, str) and reasoning_content not in raw_generation:
+            combined = f"{reasoning_content}\n{raw_generation}".strip()
+            raw = combined if combined else raw_generation
         
         # Update session memory
-        session.add_turn(user=prompt, assistant=clean, meta={"raw": raw})
+        session.add_turn(
+            user=prompt,
+            assistant=clean,
+            meta={"raw": raw, "reasoning": reasoning_content},
+        )
         
         # Extract vLLM-specific metadata if available
         request_output = outputs[0]
         num_input_tokens = getattr(request_output, "prompt_token_ids", None)
         if num_input_tokens is not None:
             num_input_tokens = len(num_input_tokens)
+
+        reasoning_token_ids = getattr(output, "reasoning_token_ids", None)
+        reasoning_tokens = None
+        if isinstance(reasoning_token_ids, (list, tuple)):
+            reasoning_tokens = len(reasoning_token_ids)
         
         return {
             "text": clean,
             "raw_text": raw,
+            "content": clean,
+            "raw_content": content_candidate,
+            "reasoning_content": reasoning_content,
+            "reasoning_tokens": reasoning_tokens,
             "tokens": len(output.token_ids),
             "num_input_tokens": num_input_tokens,
             "num_output_tokens": len(output.token_ids),

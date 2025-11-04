@@ -95,9 +95,33 @@ def _merge(existing: Dict[str, Any] | None, new_issue: Dict[str, Any]) -> Dict[s
         existing["severity"] = new_issue.get("severity", existing.get("severity"))
 
     if "meta" in new_issue:
-        meta = dict(existing.get("meta", {}))
-        meta.update(new_issue["meta"])
-        existing["meta"] = meta
+        merged_meta = dict(existing.get("meta", {}))
+        for key, value in new_issue["meta"].items():
+            if isinstance(value, list):
+                prior = merged_meta.get(key, [])
+                if not isinstance(prior, list):
+                    prior = []
+                combined = list(dict.fromkeys(prior + value))
+                merged_meta[key] = combined
+            elif isinstance(value, dict):
+                prior = merged_meta.get(key, {})
+                if not isinstance(prior, dict):
+                    prior = {}
+                prior.update(value)
+                merged_meta[key] = prior
+            else:
+                merged_meta[key] = value
+        existing["meta"] = merged_meta
+
+        step_list = merged_meta.get("step_indices")
+        if isinstance(step_list, list) and step_list:
+            unique_steps = sorted(dict.fromkeys(step_list))
+            merged_meta["step_indices"] = unique_steps
+            summary = ", ".join(str(idx) for idx in unique_steps[:20])
+            if len(unique_steps) > 20:
+                summary += ", ..."
+            base_description = merged_meta.get("base_description") or existing.get("description", "Model JSON parse failure")
+            existing["description"] = f"{base_description} Affected steps: {summary}."
     return existing
 
 

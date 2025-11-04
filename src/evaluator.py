@@ -17,9 +17,8 @@ DEFAULT_STEP_SYSTEM_PROMPT = (
     "You are a strict formal reduction evaluator. "
     "In issue descriptions, be specific about WHAT is missing and WHAT should be added. "
     "Example: Instead of 'missing justification', write 'Missing explanation of how variable x maps to clauses C1, C2, C3'. "
-    "You MUST respond with ONLY valid JSON that matches the provided schema. "
-    "Do NOT include any prefixes like 'analysis', 'assistant', or any explanatory text. "
-    "Output ONLY the raw JSON object starting with { and ending with }."
+    "Respond with valid JSON that matches the provided schema. "
+    "The first JSON object you produce will be parsed; omit extra prose after it."
 )
 
 
@@ -83,6 +82,7 @@ def evaluate_step(
     except StructuredCallError as exc:
         logger.warning("Step evaluation failed for index %d: %s", index, exc)
         extracted = _extract_reason_list(str(exc))
+        error_message = str(exc)
         fallback = {
             "step_index": index,
             "step_text": step_text,
@@ -108,12 +108,18 @@ def evaluate_step(
         else:
             fallback["issues"] = [
                 {
-                    "id": f"step{index}-parsing-fail",
+                    "id": "model-parse-failure",
                     "title": "Model JSON parse failure",
-                    "description": str(exc),
+                    "description": "Structured evaluator could not parse the model response; using fallback result.",
                     "severity": "high",
                     "category": "other",
-                    "step_index": index,
+                    "step_index": None,
+                    "meta": {
+                        "model_error": True,
+                        "step_indices": [index],
+                        "last_error": error_message[:2000],
+                        "base_description": "Structured evaluator could not parse the model response; using fallback result.",
+                    },
                 }
             ]
         return fallback, None

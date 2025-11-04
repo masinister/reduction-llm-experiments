@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .schemas import GLOBAL_EVAL_SCHEMA
@@ -13,10 +12,12 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULT_GLOBAL_SYSTEM_PROMPT = (
-    "You are verifying whether the whole reduction relies on hidden assumptions or "
-    "leaks the target ground truth. "
-    "In issue descriptions, specify which steps leak information and what should be removed or changed. "
-    "Respond only with JSON that matches the schema."
+    "You are an expert reduction-proof auditor. "
+    "Review the candidate steps and decide whether they form a self-contained argument. "
+    "Flag any place where the steps rely on context, ground truth snippets, or unstated lemmas instead of introducing the needed definitions themselves. "
+    "List hidden assumptions, missing definitions, or global logical gaps. "
+    "Explain every issue, cite the affected step index when possible, and assign severities (high for correctness blockers, medium for unclear dependencies, low for minor clarity). "
+    "Output strictly JSON conforming to the provided schema."
 )
 
 _MAX_TEXT_CHARS = 2000
@@ -63,7 +64,11 @@ def run_global_evaluation(
         "steps": _truncate_steps(steps),
     }
     user_prompt = (
-        "Assess whether the reduction relies on the ground truth or has global issues.\n"
+        "Determine whether the candidate steps constitute a self-contained reduction proof.\n"
+        "Use the source, target, and ground-truth texts only to detect dependencies -- do not assume the final argument may reference them.\n"
+        "Tasks: (1) Set `relies_on_ground_truth` true if any step depends on those external texts or leaves definitions implicit.\n"
+        "(2) Add concise strings to `reasons` summarizing the main findings.\n"
+        "(3) Populate `issues` with detailed findings, unique `id` values, severities, categories, and step indices when applicable.\n"
         "Return JSON only.\n\n"
         f"Payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n"
     )
@@ -88,82 +93,11 @@ def run_global_evaluation(
 
 
 def _fallback_global_eval(*, context: Mapping[str, Any], steps: Iterable[str]) -> Dict[str, Any]:
-    """Cheap heuristic substitute when the model cannot respond."""
-    gt = context.get("ground_truth", "")
-    gt_tokens = _tokenize(gt)
-    step_tokens = _tokenize(" ".join(steps))
-    overlap = _ngram_overlap(gt_tokens, step_tokens)
-    relies = overlap > 0.6 if gt_tokens else False
-    undefined_symbols = _find_undefined_symbols(steps)
-
-    issues: List[Dict[str, Any]] = []
-    if relies:
-        issues.append(
-            {
-                "id": "global-ground-truth-overlap",
-                "title": "Possible ground-truth leakage",
-                "description": "Large lexical overlap between steps and ground truth.",
-                "severity": "medium",
-                "category": "ground-truth-leak",
-                "step_index": None,
-            }
-        )
-    if undefined_symbols:
-        issues.append(
-            {
-                "id": "global-undefined-symbols",
-                "title": "Undefined notation detected",
-                "description": "Undefined tokens: " + ", ".join(sorted(undefined_symbols)),
-                "severity": "medium",
-                "category": "notation",
-                "step_index": None,
-            }
-        )
-
-    reasons: List[str] = []
-    if relies:
-        reasons.append("Ground truth tokens appear heavily in the candidate steps.")
-    if undefined_symbols:
-        reasons.append("Found unused uppercase tokens or placeholders without definitions.")
-    if not reasons:
-        reasons.append("No strong global issues detected via heuristics.")
-
     return {
-        "relies_on_ground_truth": relies,
-        "reasons": reasons,
-        "issues": issues,
+        "relies_on_ground_truth": False,
+        "reasons": ["Structured global evaluation unavailable."],
+        "issues": [],
     }
-
-
-def _tokenize(text: str) -> List[str]:
-    return [tok.lower() for tok in text.split() if tok]
-
-
-def _ngram_overlap(gt_tokens: List[str], step_tokens: List[str]) -> float:
-    if not gt_tokens or not step_tokens:
-        return 0.0
-    gt_counts = Counter(gt_tokens)
-    step_counts = Counter(step_tokens)
-    intersection = sum(min(gt_counts[tok], step_counts[tok]) for tok in gt_counts)
-    total = sum(gt_counts.values())
-    return intersection / total if total else 0.0
-
-
-def _find_undefined_symbols(steps: Iterable[str]) -> List[str]:
-    seen = set()
-    undefined = set()
-    for text in steps:
-        tokens = text.split()
-        if not tokens:
-            continue
-        defined = tokens[0].isalpha() and tokens[0][0].islower()
-        for tok in tokens:
-            if tok.isupper() and tok.isalpha():
-                if defined:
-                    seen.add(tok)
-                elif tok not in seen:
-                    undefined.add(tok)
-    return sorted(undefined)
 
 
 __all__ = ["run_global_evaluation", "DEFAULT_GLOBAL_SYSTEM_PROMPT"]
