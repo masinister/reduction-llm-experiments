@@ -92,8 +92,16 @@ GT_COMPARE_SCHEMA = {
     "type": "object",
     "properties": {
         "consistent": {"type": "boolean"},
-        "differences": {"type": "array", "items": {"type": "string"}},
-        "issues": {"type": "array", "items": STEP_ISSUE},
+        "differences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 3,
+        },
+        "issues": {
+            "type": "array",
+            "items": STEP_ISSUE,
+            "maxItems": 3,
+        },
     },
     "required": ["consistent", "differences", "issues"],
     "additionalProperties": False,

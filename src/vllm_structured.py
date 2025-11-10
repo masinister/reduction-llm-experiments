@@ -5,6 +5,7 @@ import time
 import logging
 import hashlib
 import uuid
+from pprint import pformat
 from typing import Any, Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -12,6 +13,31 @@ import jsonschema  # pip install jsonschema
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+_DEBUG_SEPARATOR = "#" * 80
+
+
+def _debug_block(title: str, content: Any) -> None:
+    """Emit a formatted debug block when debug logging is enabled."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    if isinstance(content, str):
+        body = content
+    else:
+        try:
+            body = json.dumps(content, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            body = pformat(content)
+
+    message = (
+        f"{_DEBUG_SEPARATOR}\n"
+        f"# {title}\n"
+        f"{_DEBUG_SEPARATOR}\n"
+        f"{body}\n"
+        f"{_DEBUG_SEPARATOR}"
+    )
+    logger.debug(message)
 
 
 @dataclass
@@ -202,6 +228,25 @@ def run_structured(
                 call_kwargs["max_tokens"] = max_tokens
 
             call_session_id = f"{session_id}-{uuid.uuid4().hex[:8]}-attempt{attempt}"
+            if logger.isEnabledFor(logging.DEBUG):
+                meta_payload = {
+                    "session_id": session_id,
+                    "call_session_id": call_session_id,
+                    "attempt": attempt,
+                    "enable_thinking": enable_thinking,
+                    "response_format": "json_object",
+                }
+                if call_kwargs:
+                    meta_payload.update(call_kwargs)
+                _debug_block("STRUCTURED CALL METADATA", meta_payload)
+                _debug_block(
+                    f"STRUCTURED CALL SYSTEM PROMPT (session={session_id}, attempt={attempt})",
+                    system_prompt,
+                )
+                _debug_block(
+                    f"STRUCTURED CALL USER PROMPT (session={session_id}, attempt={attempt})",
+                    user_prompt,
+                )
             # Pass schema via response_format for vLLM decode-time enforcement
             result = model.infer(
                 prompt=user_prompt,
@@ -224,6 +269,20 @@ def run_structured(
             tokens = int(result.get("tokens", 0))
             raw_text_accum = raw
             cleaned_accum = cleaned
+
+            _debug_block(
+                f"MODEL RAW OUTPUT (session={session_id}, attempt={attempt})",
+                raw if raw else "<EMPTY RAW OUTPUT>",
+            )
+            _debug_block(
+                f"MODEL CLEANED OUTPUT (session={session_id}, attempt={attempt})",
+                cleaned if cleaned else "<EMPTY CLEANED OUTPUT>",
+            )
+            if reasoning_text:
+                _debug_block(
+                    f"MODEL REASONING OUTPUT (session={session_id}, attempt={attempt})",
+                    reasoning_text,
+                )
             
             # Capture vLLM-specific metadata if available
             num_input_tokens = result.get("num_input_tokens")
@@ -237,6 +296,11 @@ def run_structured(
             if parsed is None:
                 # second try: parse raw_text
                 parsed = _try_parse_json(raw)
+            if parsed is not None:
+                _debug_block(
+                    f"PARSED MODEL JSON (session={session_id}, attempt={attempt})",
+                    parsed,
+                )
                 
             # Log raw output when parsing fails for debugging
             if parsed is None:
@@ -263,6 +327,18 @@ def run_structured(
                     cleaned_accum = repair_cleaned
                     reasoning_accum = result.get("reasoning_content", reasoning_accum)
                     tokens += repair_tokens
+                    _debug_block(
+                        f"REPAIRED MODEL RAW OUTPUT (session={session_id}, attempt={attempt})",
+                        repair_raw if repair_raw else "<EMPTY RAW OUTPUT>",
+                    )
+                    _debug_block(
+                        f"REPAIRED MODEL CLEANED OUTPUT (session={session_id}, attempt={attempt})",
+                        repair_cleaned if repair_cleaned else "<EMPTY CLEANED OUTPUT>",
+                    )
+                    _debug_block(
+                        f"REPAIRED PARSED JSON (session={session_id}, attempt={attempt})",
+                        parsed,
+                    )
 
             if parsed is None:
                 # If structured outputs were enforced at decode time vLLM sometimes returns structured payload
@@ -289,12 +365,36 @@ def run_structured(
                             raw_text_accum = repair_raw
                             cleaned_accum = repair_cleaned
                             tokens += repair_tokens
+                            _debug_block(
+                                f"REPAIRED MODEL RAW OUTPUT (session={session_id}, attempt={attempt})",
+                                repair_raw if repair_raw else "<EMPTY RAW OUTPUT>",
+                            )
+                            _debug_block(
+                                f"REPAIRED MODEL CLEANED OUTPUT (session={session_id}, attempt={attempt})",
+                                repair_cleaned if repair_cleaned else "<EMPTY CLEANED OUTPUT>",
+                            )
+                            _debug_block(
+                                f"REPAIRED PARSED JSON (session={session_id}, attempt={attempt})",
+                                parsed,
+                            )
                             ok, err = _validate_schema(parsed, json_schema)
                     if not ok:
                         raise StructuredCallError(f"JSON schema validation failed: {err}")
 
             # success
             latency = time.time() - start_time
+            if logger.isEnabledFor(logging.DEBUG):
+                metrics_payload = {
+                    "session_id": session_id,
+                    "attempts": attempts,
+                    "latency_s": latency,
+                    "tokens": tokens,
+                    "num_input_tokens": num_input_tokens,
+                    "num_output_tokens": num_output_tokens,
+                    "finish_reason": finish_reason,
+                    "reasoning_tokens": reasoning_tokens,
+                }
+                _debug_block("STRUCTURED CALL METRICS", metrics_payload)
             return StructuredResult(
                 data=parsed,
                 raw_text=raw_text_accum,
@@ -389,6 +489,22 @@ def _attempt_json_repair(
         repair_kwargs["max_tokens"] = max_tokens
 
     try:
+        if logger.isEnabledFor(logging.DEBUG):
+            meta_payload = {
+                "session_id": session_id,
+                "mode": "json_repair",
+                "temperature": repair_kwargs.get("temperature"),
+                "max_tokens": repair_kwargs.get("max_tokens"),
+            }
+            _debug_block("JSON REPAIR CALL METADATA", meta_payload)
+            _debug_block(
+                f"JSON REPAIR SYSTEM PROMPT (session={session_id})",
+                repair_system_prompt,
+            )
+            _debug_block(
+                f"JSON REPAIR USER PROMPT (session={session_id})",
+                repair_user_prompt,
+            )
         result = model.infer(
             prompt=repair_user_prompt,
             session_id=f"{session_id}-repair-{uuid.uuid4().hex[:8]}",
@@ -405,6 +521,15 @@ def _attempt_json_repair(
     repair_cleaned = result.get("text", repair_raw).strip()
     repair_tokens = int(result.get("tokens", 0))
 
+    _debug_block(
+        f"JSON REPAIR RAW OUTPUT (session={session_id})",
+        repair_raw if repair_raw else "<EMPTY RAW OUTPUT>",
+    )
+    _debug_block(
+        f"JSON REPAIR CLEANED OUTPUT (session={session_id})",
+        repair_cleaned if repair_cleaned else "<EMPTY CLEANED OUTPUT>",
+    )
+
     parsed = _try_parse_json(repair_cleaned)
     if parsed is None:
         parsed = _try_parse_json(repair_raw)
@@ -419,5 +544,10 @@ def _attempt_json_repair(
     if not ok:
         logger.warning("JSON repair attempt failed schema validation: %s", err)
         return None
+
+    _debug_block(
+        f"JSON REPAIR PARSED OUTPUT (session={session_id})",
+        parsed,
+    )
 
     return parsed, repair_raw, repair_cleaned, repair_tokens

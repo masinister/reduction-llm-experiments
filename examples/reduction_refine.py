@@ -54,7 +54,8 @@ RIGOROUS_SYSTEM_PROMPTS = {
     "compare": (
         "Compare the candidate to the ground-truth proof with special attention to the rigor "
         "of justifications. Call out omissions where the ground truth includes explicit reasoning "
-        "that the candidate lacks, even if the high-level outline matches. Respond only with JSON."
+        "that the candidate lacks, even if the high-level outline matches. Report at most three "
+        "differences and three issues by merging redundant findings. Respond only with JSON."
     ),
     "repair": (
         "You revise reduction steps to restore formal rigor. Wherever an issue flags missing "
@@ -211,7 +212,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--max-iters", type=int, default=3, help="Maximum refinement iterations")
     parser.add_argument("--limit", type=int, help="Only process the first N rows from the CSV")
     parser.add_argument("--skip-generation", action="store_true", help="Skip candidate generation, use ground truth directly")
-    parser.add_argument("--debug", action="store_true", help="Enable verbose debug output showing raw model responses")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging that pretty-prints every prompt and model response",
+    )
     args = parser.parse_args(argv)
     
     # Configure logging based on debug flag

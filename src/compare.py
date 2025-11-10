@@ -15,6 +15,7 @@ logger.addHandler(logging.NullHandler())
 DEFAULT_COMPARE_SYSTEM_PROMPT = (
     "Compare the candidate reduction with the provided ground truth. "
     "In issue descriptions, state which step differs and what specific content from ground truth should be added. "
+    "Report at most three distinct differences and three issues by merging redundant findings. "
     "Respond only in JSON matching the schema."
 )
 
@@ -47,6 +48,8 @@ def compare_to_ground_truth(
     """
     if max_tokens is None:
         max_tokens = get_max_tokens_from_config()
+    # Ensure enough budget for guided decoding while guarding against runaway generations.
+    max_tokens = max(max_tokens, 2048)
     """Run ground-truth comparison with fallback diff heuristics."""
     truncated_gt = _truncate_text(context.get("ground_truth", ""))
     candidate_steps = list(steps[:_MAX_STEPS])
@@ -58,7 +61,7 @@ def compare_to_ground_truth(
     }
     user_prompt = (
         "Compare the candidate reduction to the ground-truth description.\n"
-        "Return only JSON.\n\n"
+        "Return only JSON. Limit yourself to at most three differences and three issues; combine similar points.\n\n"
         f"Payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n"
     )
 
