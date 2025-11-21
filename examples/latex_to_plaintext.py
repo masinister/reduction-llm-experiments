@@ -1,11 +1,17 @@
 import json
+import logging
 import os
 import pandas as pd
 from typing import Dict, Any
 from pydantic import BaseModel, Field
 from tqdm import tqdm
-from src.backend import Backend
+from src.core_backend import CoreBackend
+from src.pipeline import Pipeline
+from src.context_budget import ContextBudget
+from src.utils import parse_structured_output
 import argparse
+
+logger = logging.getLogger(__name__)
 
 # Define Pydantic Model for Structured Output
 class PlaintextConversion(BaseModel):
@@ -22,28 +28,35 @@ def conversion_prompt_formatter(context: Dict[str, Any]) -> str:
         
     return prompt
 
-def process_text(backend: Backend, text: str) -> str:
+def process_text(pipeline: Pipeline, text: str) -> str:
     if not isinstance(text, str) or not text.strip():
         return ""
-    
+
+    context = {"text": text}
     try:
-        context = {"text": text}
-        out_json = backend.inference(
-            context, 
-            conversion_prompt_formatter, 
-            PlaintextConversion.model_json_schema(),
-            assemble_final=True,
-            use_summarization=False,
-            chunk_size_tokens=2000,
-            overlap_tokens=200
+        out_json = pipeline.process(
+            text=text,
+            json_schema=PlaintextConversion.model_json_schema(),
+            prompt_formatter=conversion_prompt_formatter,
+            chunk_size_tokens=2048,
+            overlap_tokens=256
         )
+
+        # Use the new utils for parsing
+        parsed = parse_structured_output(out_json, PlaintextConversion)
         
-        parsed_output = json.loads(out_json)
-        return parsed_output.get("plaintext", text)
-    except Exception:
-        # Return original text if conversion fails
+        if parsed:
+            return parsed.plaintext
+        
+        # Fallback: return original text if parsing failed
+        logger.warning(f"Failed to parse output, returning original text")
         return text
 
+    except Exception as e:
+        # Log if you have logging; return original text on any failure
+        logger.exception("Conversion failed: %s", e)
+        return text
+    
 def main():
     parser = argparse.ArgumentParser(description="Convert LaTeX to plaintext.")
     parser.add_argument("--limit", type=int, help="Limit the number of rows to process for testing.")
@@ -65,8 +78,15 @@ def main():
         df = df.head(args.limit)
     
     # Initialize Backend
-    print("Initializing Backend...")
-    backend = Backend()
+    print("Initializing Pipeline...")
+    core = CoreBackend()
+    pipeline = Pipeline(
+        core_backend=core,
+        context_budget=ContextBudget(),
+        merger_strategy="hierarchical",
+        merger_batch_size=5,
+        use_summarization=False  # Don't need summarization for conversion
+    )
     
     # Define columns to convert
     # We focus on 'reduction_full_text' as it contains the main LaTeX content.
@@ -80,8 +100,8 @@ def main():
             print(f"Processing column: {col}")
             new_col = f"{col}_plaintext"
             
-            # Use progress_apply with a lambda to pass the backend
-            df[new_col] = df[col].progress_apply(lambda x: process_text(backend, x))
+            # Use progress_apply with a lambda to pass the pipeline
+            df[new_col] = df[col].progress_apply(lambda x: process_text(pipeline, x))
             
     # Save
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

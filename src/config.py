@@ -67,6 +67,16 @@ def load(path: str | Path | None = None) -> None:
 	# CUDAGraphMode for vLLM: NONE/PIECEWISE/FULL/FULL_DECODE_ONLY/FULL_AND_PIECEWISE
 	CUDAGRAPH_MODE = _get(parser, "compilation", "cudagraph_mode", str, "PIECEWISE")
 
+	# Context budget
+	global CONTEXT_BUDGET_SYSTEM_PCT, CONTEXT_BUDGET_SUMMARY_PCT
+	global CONTEXT_BUDGET_PROMPT_PCT, CONTEXT_BUDGET_OUTPUT_PCT
+	global CONTEXT_BUDGET_SAFETY_MARGIN
+	CONTEXT_BUDGET_SYSTEM_PCT = _get(parser, "context_budget", "system_pct", float, 0.05)
+	CONTEXT_BUDGET_SUMMARY_PCT = _get(parser, "context_budget", "summary_pct", float, 0.10)
+	CONTEXT_BUDGET_PROMPT_PCT = _get(parser, "context_budget", "prompt_pct", float, 0.35)
+	CONTEXT_BUDGET_OUTPUT_PCT = _get(parser, "context_budget", "output_pct", float, 0.50)
+	CONTEXT_BUDGET_SAFETY_MARGIN = _get(parser, "context_budget", "safety_margin_tokens", int, 32)
+
 
 # Expose names in __all__
 __all__ = [
@@ -82,5 +92,10 @@ __all__ = [
 	"GPU_MEMORY_UTILIZATION",
 	"MAX_MODEL_LEN",
 	"CUDAGRAPH_MODE",
+	"CONTEXT_BUDGET_SYSTEM_PCT",
+	"CONTEXT_BUDGET_SUMMARY_PCT",
+	"CONTEXT_BUDGET_PROMPT_PCT",
+	"CONTEXT_BUDGET_OUTPUT_PCT",
+	"CONTEXT_BUDGET_SAFETY_MARGIN",
 	"load",
 ]
