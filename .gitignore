@@ -1,0 +1,5 @@
+.copilot
+*.egg-info
+__pycache__
+build/
+data/

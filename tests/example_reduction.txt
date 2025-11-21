@@ -1,0 +1,49 @@
+Here is the plaintext version (no LaTeX, no symbols lost):
+
+---
+
+**Theorem.** Independent Set reduces to Triangle Cover.
+
+**Proof.**
+We describe the reduction procedure and then give a proof of correctness.
+
+**Reduction.**
+Assume we have an algorithm A that solves Triangle Cover. Then we can execute the following algorithm to solve Independent Set:
+
+Given an instance (G, k) of Independent Set, construct a graph G′ = (V′, E′) as follows:
+
+1. Initially let V′ = V and E′ = E.
+2. For every edge e = (u, v) in E, add a vertex v_e to V′ and add edges (u, v_e) and (v_e, v) to E′.
+
+Then return the result of running A on (G′, n − k), where n = |V|.
+
+**Proof of correctness.**
+
+It remains to prove that G has an independent set of size k if and only if G′ has a triangle cover of size n − k.
+
+---
+
+**(⇒)** Suppose G has an independent set I of size k. Then for every edge (u, v) in E, at least one of u or v is in the complement S = V \ I. Note that S is a set of vertices that covers all edges in E, and |S| = n − k.
+
+Now observe that any triangle in G′ contains an edge (u, v) from E.
+
+* First, suppose a triangle in G′ contains only vertices from V. All edges in this triangle must be edges of E, so each such edge has at least one endpoint in S.
+* Next, suppose a triangle contains a new vertex v_e. The edges in this triangle are (u, v_e), (v_e, v), and (u, v). Since (u, v) is in E, at least one of u or v is in S.
+
+Thus every triangle in G′ has a vertex in S. Therefore S is a triangle cover in G′ of size n − k.
+
+---
+
+**(⇐)** Suppose G′ has a triangle cover S of size n − k. That is, S contains at least one vertex from every triangle in G′.
+
+For every edge (u, v) in E, the vertices u, v, and v_(u,v) form a triangle in G′. Thus S contains at least one of u, v, or v_(u,v).
+
+Now modify S as follows: for every vertex v_(u,v) in S, replace it with either u or v. This does not increase the size of S. If needed, we may arbitrarily add vertices until S has size n − k; such a set still covers all triangles in G′ because any triangle containing v_e also contains u and v.
+
+After this modification, for every edge (u, v) in E, S contains at least one of u or v.
+
+Now construct I = V \ S. No pair of vertices u, v in I can form an edge of E, because if (u, v) were an edge, then S would have contained one of them. Thus I is an independent set in G of size k.
+
+---
+
+This completes the proof.
