@@ -112,10 +112,9 @@ class Pipeline:
             f"ITEM {i+1}:\n{output}" for i, output in enumerate(outputs_batch)
         )
         merge_instructions += (
-            "\n\nInstructions: Combine these partial outputs into a single coherent JSON output "
-            "that conforms to the schema. Resolve any duplicates or conflicts using the global "
-            "summary as a guide. If information is missing, be conservative and do not hallucinate. "
-            "Output ONLY valid JSON that conforms to the schema - no think blocks or additional text."
+            "\n\nInstructions: Combine these partial outputs into a single JSON output. "
+            "Remove duplicate information. Keep all unique, meaningful content from both items. "
+            "Output ONLY valid JSON - no explanations."
         )
         
         # Use structured output with the current schema to ensure valid JSON
@@ -150,12 +149,14 @@ class Pipeline:
         Returns:
             Updated summary text
         """
+        current_summary_tokens = self.core.count_tokens(current_summary) if current_summary else 0
+
         summary_prompt = (
             "CONCISE SUMMARY TASK:\n"
             "Given the previous summary and the just-processed chunk result, produce a short "
-            f"(target: {max_summary_tokens} tokens) summary that captures the important "
+            f"(target: at most {max_summary_tokens} tokens) summary that captures the important "
             "information needed to reason across chunks.\n\n"
-            f"Previous summary:\n{current_summary}\n\n"
+            f"Previous summary (length: {current_summary_tokens} tokens):\n{current_summary}\n\n"
             f"Chunk result:\n{chunk_output}\n\n"
             "Return JSON with format: {\"summary\": \"...\"}"
         )
@@ -322,10 +323,16 @@ class Pipeline:
                 )
             
             # Add instructions
-            chunk_user_prompt += (
-                "\n\nInstructions: Analyze this chunk and extract information relevant to "
-                "the task. Output must conform to the requested JSON schema."
-            )
+            if len(chunks) > 1 and running_summary:
+                chunk_user_prompt += (
+                    "\n\nInstructions: Extract key information from this chunk. "
+                    "Use the previous summary for context if this chunk starts mid-sentence. "
+                    "Output must be valid JSON matching the schema."
+                )
+            else:
+                chunk_user_prompt += (
+                    "\n\nInstructions: Extract key information. Output must be valid JSON matching the schema."
+                )
             
             # Generate for this chunk
             chunk_output = self.core.generate_once(

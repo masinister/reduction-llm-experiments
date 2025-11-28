@@ -12,6 +12,7 @@ It does NOT handle chunking, merging, or orchestration logic.
 from typing import Any, Dict, List, Optional
 from vllm import LLM, SamplingParams
 import logging
+import json
 
 from src import config
 
@@ -106,6 +107,23 @@ class CoreBackend:
         """
         full_prompt = self.make_chat_prompt(system, user)
         
+        # DEBUG: Pretty-print the prompt (use print to show alongside vLLM progress bars)
+        if getattr(config, "DEBUG", False):
+            print("\n" + "="*80)
+            print("[DEBUG] PROMPT")
+            print("="*80)
+            print(f"[DEBUG] System: {system or '(none)'}")
+            print(f"[DEBUG] User:\n{user}")
+            print(f"[DEBUG] Full Prompt:\n{full_prompt}")
+            print(f"[DEBUG] Sampling Params: temp={sampling_params.temperature or 0.0:.2f}, "
+                  f"top_p={sampling_params.top_p or 1.0:.2f}, max_tokens={sampling_params.max_tokens or 0}")
+            if sampling_params.structured_outputs:
+                schema_str = (json.dumps(sampling_params.structured_outputs.json, indent=2) 
+                             if hasattr(sampling_params.structured_outputs, 'json') else "(set)")
+                print(f"[DEBUG] Structured Output Schema:\n{schema_str}")
+            print("="*80)
+            print()  # Extra newline before vLLM output
+        
         attempt = 0
         while attempt <= max_retries:
             attempt += 1
@@ -115,6 +133,20 @@ class CoreBackend:
                 if results and results[0].outputs:
                     text = results[0].outputs[0].text or ""
                     if text.strip():
+                        # DEBUG: Pretty-print the response (use print to show alongside vLLM progress bars)
+                        if getattr(config, "DEBUG", False):
+                            print("\n" + "="*80)
+                            print("[DEBUG] RESPONSE")
+                            print("="*80)
+                            print(f"[DEBUG] Generated Text (length={len(text)}):")
+                            # Try to pretty-print if it's JSON
+                            try:
+                                parsed = json.loads(text)
+                                print(json.dumps(parsed, indent=2))
+                            except (json.JSONDecodeError, ValueError):
+                                print(text)
+                            print("="*80)
+                            print()  # Extra newline after
                         return text
                     
                 logger.warning(

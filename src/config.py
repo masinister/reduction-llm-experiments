@@ -56,6 +56,10 @@ def load(path: str | Path | None = None) -> None:
 	global SYSTEM_PROMPT
 	SYSTEM_PROMPT = _get(parser, "system", "system_prompt", str, "You are a helpful AI assistant.")
 
+	# Debug mode
+	global DEBUG
+	DEBUG = _get(parser, "debug", "debug", bool, False)
+
 	# Hardware
 	global TENSOR_PARALLEL_SIZE, GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN
 	TENSOR_PARALLEL_SIZE = _get(parser, "hardware", "tensor_parallel_size", int, 1)
@@ -97,5 +101,6 @@ __all__ = [
 	"CONTEXT_BUDGET_PROMPT_PCT",
 	"CONTEXT_BUDGET_OUTPUT_PCT",
 	"CONTEXT_BUDGET_SAFETY_MARGIN",
+	"DEBUG",
 	"load",
 ]

@@ -38,8 +38,8 @@ def process_text(pipeline: Pipeline, text: str) -> str:
             text=text,
             json_schema=PlaintextConversion.model_json_schema(),
             prompt_formatter=conversion_prompt_formatter,
-            chunk_size_tokens=2048,
-            overlap_tokens=256
+            chunk_size_tokens=256,
+            overlap_tokens=64
         )
 
         # Use the new utils for parsing

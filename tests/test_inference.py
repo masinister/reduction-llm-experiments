@@ -88,7 +88,7 @@ def main() -> None:
             json_schema=key_points_schema,
             prompt_formatter=long_context_formatter,
             chunk_size_tokens=512,  # Small limit to force multiple chunks
-            overlap_tokens=64
+            overlap_tokens=256
         )
         print(out_long)
         
