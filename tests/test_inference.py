@@ -42,21 +42,11 @@ def main() -> None:
         )
         print(out)
 
-        print("\n--- System Prompt Inference ---\n")
-        out_sys = pipeline.process(
-            text=context['text'],
-            json_schema=person_schema,
-            prompt_formatter=prompt_formatter,
-            system_prompt="Bob is short for Robert -- Replace all occurrences of 'Bob' with 'Robert'."
-        )
-        print(out_sys)
-
         print("\n--- Reasoning Mode Inference ---\n")
         out_reason = pipeline.process(
             text=context['text'],
             json_schema=person_schema,
             prompt_formatter=prompt_formatter,
-            system_prompt="Bob is short for Robert -- Replace all occurrences of 'Bob' with 'Robert'.",
             reasoning_mode=True
         )
         print(out_reason)
@@ -83,12 +73,13 @@ def main() -> None:
         context_long = {"text": long_text}
         
         # Force chunking with small token limit
+        # Use 20% overlap (51 tokens) to avoid breaking mid-sentence
         out_long = pipeline.process(
             text=long_text,
             json_schema=key_points_schema,
             prompt_formatter=long_context_formatter,
-            chunk_size_tokens=512,  # Small limit to force multiple chunks
-            overlap_tokens=256
+            chunk_size_tokens=256,  # Small limit to force multiple chunks
+            overlap_tokens=51  # ~20% overlap for better context continuity
         )
         print(out_long)
         

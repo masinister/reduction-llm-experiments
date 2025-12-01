@@ -59,7 +59,7 @@ def process_text(pipeline: Pipeline, text: str) -> str:
     
 def main():
     parser = argparse.ArgumentParser(description="Convert LaTeX to plaintext.")
-    parser.add_argument("--limit", type=int, help="Limit the number of rows to process for testing.")
+    parser.add_argument("--limit", type=int, help="Limit the number of rows to process for testing.") 
     args = parser.parse_args()
 
     # Load Data

@@ -3,8 +3,7 @@
 This module provides a minimal, stateless wrapper around vLLM for generating
 completions. It is responsible ONLY for:
   - LLM initialization and configuration
-  - Chat prompt construction using tokenizer templates
-  - Single-shot generation with sampling parameters
+  - Single-shot generation with sampling parameters and structured outputs
   
 It does NOT handle chunking, merging, or orchestration logic.
 """
@@ -15,6 +14,7 @@ import logging
 import json
 
 from src import config
+from src.debug_printer import DebugPrinter
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class CoreBackend:
         *,
         llm: Optional[LLM] = None,
         tokenizer: Optional[Any] = None,
-        model_config: Optional[Dict[str, Any]] = None
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize the LLM backend.
         
@@ -64,89 +64,41 @@ class CoreBackend:
         # Store max model len for budget calculations
         self.max_model_len = getattr(config, "MAX_MODEL_LEN", 8192)
 
-    def make_chat_prompt(self, system: Optional[str], user: str) -> str:
-        """Construct a chat-formatted prompt using the tokenizer's template.
-        
-        Args:
-            system: Optional system message to prepend
-            user: User message content
-            
-        Returns:
-            Fully formatted prompt string ready for generation
-        """
-        messages: List[Dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": user})
-        
-        # Use tokenizer's native chat template (model-specific)
-        full_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        return full_prompt
-
     def generate_once(
         self,
-        system: Optional[str],
-        user: str,
+        prompt: str,
         sampling_params: SamplingParams,
         max_retries: int = 2
     ) -> str:
-        """Generate a single completion with retry logic.
+        """Generate a single completion with structured output support.
+        
+        Uses llm.generate() with plain text prompts. Structured outputs
+        constrain generation to valid JSON matching the schema.
         
         Args:
-            system: Optional system prompt
-            user: User message content
+            prompt: Plain text prompt
             sampling_params: vLLM sampling configuration (includes structured outputs)
             max_retries: Number of retry attempts on empty output
             
         Returns:
             Generated text (may be empty string if all retries fail)
         """
-        full_prompt = self.make_chat_prompt(system, user)
-        
-        # DEBUG: Pretty-print the prompt (use print to show alongside vLLM progress bars)
+        # DEBUG: Pretty-print the prompt
         if getattr(config, "DEBUG", False):
-            print("\n" + "="*80)
-            print("[DEBUG] PROMPT")
-            print("="*80)
-            print(f"[DEBUG] System: {system or '(none)'}")
-            print(f"[DEBUG] User:\n{user}")
-            print(f"[DEBUG] Full Prompt:\n{full_prompt}")
-            print(f"[DEBUG] Sampling Params: temp={sampling_params.temperature or 0.0:.2f}, "
-                  f"top_p={sampling_params.top_p or 1.0:.2f}, max_tokens={sampling_params.max_tokens or 0}")
-            if sampling_params.structured_outputs:
-                schema_str = (json.dumps(sampling_params.structured_outputs.json, indent=2) 
-                             if hasattr(sampling_params.structured_outputs, 'json') else "(set)")
-                print(f"[DEBUG] Structured Output Schema:\n{schema_str}")
-            print("="*80)
-            print()  # Extra newline before vLLM output
+            DebugPrinter.print_prompt(prompt, sampling_params)
         
         attempt = 0
         while attempt <= max_retries:
             attempt += 1
             try:
-                results = self.llm.generate([full_prompt], sampling_params=sampling_params)
+                results = self.llm.generate([prompt], sampling_params=sampling_params)
                 
                 if results and results[0].outputs:
                     text = results[0].outputs[0].text or ""
                     if text.strip():
-                        # DEBUG: Pretty-print the response (use print to show alongside vLLM progress bars)
+                        # DEBUG: Pretty-print the response
                         if getattr(config, "DEBUG", False):
-                            print("\n" + "="*80)
-                            print("[DEBUG] RESPONSE")
-                            print("="*80)
-                            print(f"[DEBUG] Generated Text (length={len(text)}):")
-                            # Try to pretty-print if it's JSON
-                            try:
-                                parsed = json.loads(text)
-                                print(json.dumps(parsed, indent=2))
-                            except (json.JSONDecodeError, ValueError):
-                                print(text)
-                            print("="*80)
-                            print()  # Extra newline after
+                            DebugPrinter.print_response(text)
                         return text
                     
                 logger.warning(
@@ -160,7 +112,6 @@ class CoreBackend:
                     attempt, max_retries + 1, e
                 )
         
-        # All retries exhausted
         logger.error(
             "generate_once: failed to produce non-empty output after %d attempts",
             max_retries + 1
@@ -168,34 +119,13 @@ class CoreBackend:
         return ""
 
     def tokenize(self, text: str) -> List[int]:
-        """Tokenize text using the model's tokenizer.
-        
-        Args:
-            text: Text to tokenize
-            
-        Returns:
-            List of token IDs
-        """
+        """Tokenize text using the model's tokenizer."""
         return self.tokenizer.encode(text)
 
     def detokenize(self, token_ids: List[int]) -> str:
-        """Detokenize token IDs back to text.
-        
-        Args:
-            token_ids: List of token IDs
-            
-        Returns:
-            Decoded text string
-        """
+        """Detokenize token IDs back to text."""
         return self.tokenizer.decode(token_ids)
 
     def count_tokens(self, text: str) -> int:
-        """Count tokens in text.
-        
-        Args:
-            text: Text to count tokens for
-            
-        Returns:
-            Number of tokens
-        """
+        """Count tokens in text."""
         return len(self.tokenize(text))

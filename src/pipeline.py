@@ -20,7 +20,7 @@ import logging
 from src.core_backend import CoreBackend
 from src.context_budget import ContextBudget, chunk_text_by_tokens, truncate_to_tokens
 from src.merger import IncrementalMerger, HierarchicalMerger
-from src.utils import parse_structured_output
+from src.utils import parse_structured_output, find_json_block
 from src import config
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 class SummaryResponse(BaseModel):
     """Pydantic model for summary updates."""
     summary: str = Field(..., description="A concise summary of the content processed so far.")
+
+
+def _extract_json(raw_output: str) -> str:
+    """Extract JSON from raw LLM output, with fallback to original or empty object."""
+    if not raw_output or not raw_output.strip():
+        return "{}"
+    return find_json_block(raw_output) or raw_output
 
 
 class Pipeline:
@@ -96,26 +103,14 @@ class Pipeline:
         if not outputs_batch:
             return ""
         
-        # Build merge prompt
-        system = getattr(config, "SYSTEM_PROMPT", "You are a helpful assistant.")
+        # Build merge prompt - simpler is better for small models
+        prompt = "Merge these JSON outputs into one. Combine all points into a single array.\n\n"
         
-        merge_instructions = (
-            "MERGE OPERATION:\n"
-            "You are merging partial structured outputs from a large document processing task.\n"
-        )
+        for i, output in enumerate(outputs_batch):
+            prompt += f"Output {i+1}:\n{output}\n\n"
         
-        if running_summary:
-            merge_instructions += f"Global Context Summary:\n{running_summary}\n\n"
-        
-        merge_instructions += "Partial Outputs to Merge:\n"
-        merge_instructions += "\n\n---\n\n".join(
-            f"ITEM {i+1}:\n{output}" for i, output in enumerate(outputs_batch)
-        )
-        merge_instructions += (
-            "\n\nInstructions: Combine these partial outputs into a single JSON output. "
-            "Remove duplicate information. Keep all unique, meaningful content from both items. "
-            "Output ONLY valid JSON - no explanations."
-        )
+        # Note: /no_think disables Qwen3's thinking mode which can cause infinite loops
+        prompt += "Merged result (include ALL points from ALL outputs): /no_think"
         
         # Use structured output with the current schema to ensure valid JSON
         sampling_params = SamplingParams(
@@ -128,14 +123,13 @@ class Pipeline:
         if self._current_schema is not None:
             sampling_params.structured_outputs = StructuredOutputsParams(json=self._current_schema)
         
-        merged = self.core.generate_once(system, merge_instructions, sampling_params)
-        return merged
+        merged = self.core.generate_once(prompt, sampling_params)
+        return _extract_json(merged)
 
     def _update_summary(
         self,
         current_summary: str,
         chunk_output: str,
-        system_prompt: str,
         max_summary_tokens: int
     ) -> str:
         """Update the running summary with new chunk output.
@@ -143,7 +137,6 @@ class Pipeline:
         Args:
             current_summary: Current summary text
             chunk_output: Latest chunk output to incorporate
-            system_prompt: System prompt for generation
             max_summary_tokens: Target token count for summary
             
         Returns:
@@ -151,15 +144,21 @@ class Pipeline:
         """
         current_summary_tokens = self.core.count_tokens(current_summary) if current_summary else 0
 
-        summary_prompt = (
-            "CONCISE SUMMARY TASK:\n"
-            "Given the previous summary and the just-processed chunk result, produce a short "
-            f"(target: at most {max_summary_tokens} tokens) summary that captures the important "
-            "information needed to reason across chunks.\n\n"
-            f"Previous summary (length: {current_summary_tokens} tokens):\n{current_summary}\n\n"
-            f"Chunk result:\n{chunk_output}\n\n"
-            "Return JSON with format: {\"summary\": \"...\"}"
-        )
+        # Note: /no_think disables Qwen3's thinking mode which can cause infinite loops
+        # Use few-shot prompting to help smaller models understand the task
+        if current_summary and current_summary.strip() and current_summary.strip() != '...':
+            prompt = (
+                "Summarize the combined information from the previous summary and new chunk.\n\n"
+                f"Previous summary:\n{current_summary}\n\n"
+                f"New chunk result:\n{chunk_output}\n\n"
+                f"Write a concise summary (under {max_summary_tokens} tokens) combining the key information from both. /no_think"
+            )
+        else:
+            prompt = (
+                "Summarize the key information from this chunk result.\n\n"
+                f"Chunk result:\n{chunk_output}\n\n"
+                f"Write a concise summary (under {max_summary_tokens} tokens) of the main points. /no_think"
+            )
         
         # Use structured output for summary
         so_summary = StructuredOutputsParams(json=SummaryResponse.model_json_schema())
@@ -170,11 +169,7 @@ class Pipeline:
         )
         
         try:
-            raw_summary = self.core.generate_once(
-                system_prompt,
-                summary_prompt,
-                summary_sampling_params
-            )
+            raw_summary = self.core.generate_once(prompt, summary_sampling_params)
             
             # Parse using utils
             parsed = parse_structured_output(raw_summary, SummaryResponse)
@@ -202,7 +197,6 @@ class Pipeline:
         text: str,
         json_schema: Dict[str, Any],
         prompt_formatter: Callable[[Dict[str, Any]], str],
-        system_prompt: Optional[str] = None,
         reasoning_mode: bool = False,
         chunk_size_tokens: Optional[int] = None,
         overlap_tokens: Optional[int] = None,
@@ -213,7 +207,6 @@ class Pipeline:
             text: Input text to process
             json_schema: Pydantic model's JSON schema for structured outputs
             prompt_formatter: Function to format chunk into user prompt
-            system_prompt: Optional system prompt (uses config default if None)
             reasoning_mode: If True, wraps schema to include reasoning_content field
             chunk_size_tokens: Override default chunk size
             overlap_tokens: Override default overlap size
@@ -224,29 +217,22 @@ class Pipeline:
         # Calculate token budgets
         budgets = self.budget.allocate(self.core.max_model_len)
         
-        # Use budget-based defaults if not specified
+        # The prompt_tokens budget is for the CHUNK TEXT only.
+        # The full prompt to the model will be: chunk + summary + boilerplate
+        # Total input = prompt_tokens + summary_tokens + ~100 (boilerplate)
+        # This should fit within (model_max_len - output_tokens)
         chunk_size_tokens = chunk_size_tokens or budgets['prompt_tokens']
-        overlap_tokens = overlap_tokens or max(32, chunk_size_tokens // 8)
+        # Use 20% overlap to avoid breaking mid-sentence
+        overlap_tokens = overlap_tokens or max(64, chunk_size_tokens // 5)
         summary_max_tokens = budgets['summary_tokens']
         
         # Debug: Count input text tokens
         input_token_count = self.core.count_tokens(text)
+        logger.info("\n" + "─"*80)
+        logger.info("📄 INPUT PHASE")
         logger.info(
-            "[BUDGET] Input text: %d tokens, %d chars",
+            "  Input text: %d tokens, %d chars",
             input_token_count, len(text)
-        )
-        
-        # Set system prompt
-        if system_prompt is None:
-            reasoning_flag = "on" if reasoning_mode else "off"
-            system_prompt = f"Reasoning mode = {reasoning_flag}.\n{getattr(config, 'SYSTEM_PROMPT', '')}"
-        
-        # Debug: Count system prompt tokens
-        system_token_count = self.core.count_tokens(system_prompt) if system_prompt else 0
-        logger.info(
-            "[BUDGET] System prompt: %d tokens (budget: %d, usage: %.1f%%)",
-            system_token_count, budgets['system_tokens'],
-            (system_token_count / budgets['system_tokens'] * 100) if budgets['system_tokens'] > 0 else 0
         )
         
         # Prepare schema (wrap if reasoning mode)
@@ -258,7 +244,6 @@ class Pipeline:
                     "output": json_schema,
                 },
                 "required": ["reasoning_content", "output"],
-                "additionalProperties": False,
             }
         else:
             final_schema = json_schema
@@ -274,8 +259,10 @@ class Pipeline:
             overlap_tokens
         )
         
+        logger.info("\n" + "─"*80)
+        logger.info("✂️ CHUNKING PHASE")
         logger.info(
-            "[BUDGET] Processing %d chunks (chunk_size=%d tokens [budget: %d], overlap=%d)",
+            "  Processing %d chunks (chunk_size=%d tokens [budget: %d], overlap=%d)",
             len(chunks), chunk_size_tokens, budgets['prompt_tokens'], overlap_tokens
         )
         
@@ -283,74 +270,80 @@ class Pipeline:
         for idx, chunk in enumerate(chunks[:3]):  # Log first 3 chunks to avoid spam
             chunk_tokens = self.core.count_tokens(chunk)
             logger.info(
-                "[BUDGET] Chunk %d/%d: %d tokens (%.1f%% of chunk budget)",
+                "  Chunk %d/%d: %d tokens (%.1f%% of chunk budget)",
                 idx + 1, len(chunks), chunk_tokens,
                 (chunk_tokens / budgets['prompt_tokens'] * 100) if budgets['prompt_tokens'] > 0 else 0
             )
         if len(chunks) > 3:
-            logger.info("[BUDGET] ... (%d more chunks)", len(chunks) - 3)
+            logger.info("  ... (%d more chunks)", len(chunks) - 3)
         
         # Prepare sampling params for chunk processing
+        # Use temperature=0.0 for reliable extraction (override config)
         so = StructuredOutputsParams(json=final_schema)
         chunk_sampling_params = SamplingParams(
             max_tokens=budgets['output_tokens'],
-            temperature=getattr(config, "TEMPERATURE", 0.0),
-            top_p=getattr(config, "TOP_P", 1.0),
-            top_k=getattr(config, "TOP_K", 0),
+            temperature=0.0,  # Deterministic for extraction tasks
+            top_p=1.0,
+            top_k=0,
             structured_outputs=so,
         )
         
         # Process chunks
+        logger.info("\n" + "─"*80)
+        logger.info("⚙️ PROCESSING CHUNKS")
         running_summary = ""
         chunk_outputs: List[str] = []
         
         for i, chunk in enumerate(chunks):
-            # Build user prompt for this chunk
+            # Build plain text prompt for this chunk
             chunk_context = {"text": chunk}
-            chunk_user_prompt = prompt_formatter(chunk_context)
+            prompt = prompt_formatter(chunk_context)
             
             # Prepend summary if available
             if running_summary:
-                chunk_user_prompt = (
+                prompt = (
                     f"PREVIOUS SUMMARY:\n{running_summary}\n\n"
                     f"PROCESS CHUNK {i+1}/{len(chunks)}:\n\n"
-                    f"{chunk_user_prompt}"
+                    f"{prompt}"
                 )
             else:
-                chunk_user_prompt = (
+                prompt = (
                     f"PROCESS CHUNK {i+1}/{len(chunks)}:\n\n"
-                    f"{chunk_user_prompt}"
+                    f"{prompt}"
                 )
             
             # Add instructions
-            if len(chunks) > 1 and running_summary:
-                chunk_user_prompt += (
+            # Note: /no_think disables Qwen3's thinking mode which can cause infinite loops
+            # with structured JSON outputs at low temperatures
+            if len(chunks) > 1 and running_summary and running_summary.strip() not in ('', '...', '"..."'):
+                prompt += (
                     "\n\nInstructions: Extract key information from this chunk. "
+                    "Be specific and detailed - include actual facts, definitions, steps, and reasoning, not just section headers. "
                     "Use the previous summary for context if this chunk starts mid-sentence. "
-                    "Output must be valid JSON matching the schema."
+                    "Output must be valid JSON matching the schema. /no_think"
                 )
             else:
-                chunk_user_prompt += (
-                    "\n\nInstructions: Extract key information. Output must be valid JSON matching the schema."
+                prompt += (
+                    "\n\nInstructions: Extract key information. "
+                    "Be specific and detailed - include actual facts, definitions, steps, and reasoning, not just section headers. "
+                    "Output must be valid JSON matching the schema. /no_think"
                 )
             
             # Generate for this chunk
-            chunk_output = self.core.generate_once(
-                system_prompt,
-                chunk_user_prompt,
-                chunk_sampling_params
-            )
+            chunk_output = self.core.generate_once(prompt, chunk_sampling_params)
             
             if not chunk_output.strip():
                 logger.warning("Empty output for chunk %d/%d", i+1, len(chunks))
-                chunk_output = "{}"  # Fallback to empty JSON
+                chunk_output = "{}"
+            else:
+                chunk_output = _extract_json(chunk_output)
             
             chunk_outputs.append(chunk_output)
             
             # Debug: Log chunk output size
             output_tokens = self.core.count_tokens(chunk_output)
             logger.info(
-                "[BUDGET] Chunk %d/%d output: %d tokens (budget: %d, usage: %.1f%%)",
+                "  ✅ Chunk %d/%d complete: %d tokens output (budget: %d, usage: %.1f%%)",
                 i+1, len(chunks), output_tokens, budgets['output_tokens'],
                 (output_tokens / budgets['output_tokens'] * 100) if budgets['output_tokens'] > 0 else 0
             )
@@ -365,12 +358,11 @@ class Pipeline:
                 running_summary = self._update_summary(
                     running_summary,
                     chunk_output,
-                    system_prompt,
                     summary_max_tokens
                 )
                 new_summary_tokens = self.core.count_tokens(running_summary)
                 logger.info(
-                    "[BUDGET] Summary updated: %d -> %d tokens (budget: %d, usage: %.1f%%)",
+                    "  📝 Summary updated: %d → %d tokens (budget: %d, usage: %.1f%%)",
                     old_summary_tokens, new_summary_tokens, budgets['summary_tokens'],
                     (new_summary_tokens / budgets['summary_tokens'] * 100) if budgets['summary_tokens'] > 0 else 0
                 )
@@ -382,16 +374,21 @@ class Pipeline:
             # Hierarchical strategy - merge all at once
             final_output = self.merger.merge_all(chunk_outputs, running_summary)
         
+        final_output = _extract_json(final_output)
+        
         # Debug: Final output stats
         final_output_tokens = self.core.count_tokens(final_output)
+        logger.info("\n" + "─"*80)
+        logger.info("✨ FINAL OUTPUT")
         logger.info(
-            "[BUDGET] Pipeline complete. Final output: %d tokens, %d chars",
+            "  Final output: %d tokens, %d chars",
             final_output_tokens, len(final_output)
         )
         logger.info(
-            "[BUDGET] Total efficiency: Input=%d tokens -> Output=%d tokens (%.1f%% compression)",
+            "  Total efficiency: Input=%d tokens → Output=%d tokens (%.1f%% compression)",
             input_token_count, final_output_tokens,
             (1 - final_output_tokens / input_token_count) * 100 if input_token_count > 0 else 0
         )
+        logger.info("─"*80 + "\n")
         
         return final_output
