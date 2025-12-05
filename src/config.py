@@ -7,19 +7,26 @@ from typing import Any
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.ini"
 
-def _get(parser: ConfigParser, section: str, key: str, type_: type, fallback: Any):
+class ConfigError(Exception):
+	"""Raised when a required config value is missing."""
+	pass
+
+
+def _get(parser: ConfigParser, section: str, key: str, type_: type):
+	"""Get a config value, raising ConfigError if missing."""
+	if not parser.has_option(section, key):
+		raise ConfigError(f"Missing required config: [{section}] {key}")
 	try:
 		if type_ is bool:
-			return parser.getboolean(section, key, fallback=fallback)
+			return parser.getboolean(section, key)
 		if type_ is int:
-			return parser.getint(section, key, fallback=fallback)
+			return parser.getint(section, key)
 		if type_ is float:
-			return parser.getfloat(section, key, fallback=fallback)
+			return parser.getfloat(section, key)
 		# default to string
-		return parser.get(section, key, fallback=fallback)
-	except Exception:
-		# Do not raise on parse error here — return fallback
-		return fallback
+		return parser.get(section, key)
+	except ValueError as e:
+		raise ConfigError(f"Invalid value for [{section}] {key}: {e}")
 
 
 def load(path: str | Path | None = None) -> None:
@@ -30,56 +37,53 @@ def load(path: str | Path | None = None) -> None:
 	else:
 		cfg_path = _CONFIG_PATH
 
+	if not cfg_path.exists():
+		raise ConfigError(f"Config file not found: {cfg_path}")
+
 	parser = ConfigParser()
-	if cfg_path.exists():
-		parser.read(cfg_path)
-	else:
-		parser.read_dict({})
+	parser.read(cfg_path)
 
 	# Model settings
 	global USE_TOY_MODEL, MODEL_ID, DTYPE
-	DTYPE = _get(parser, "model", "dtype", str, "half")
-	USE_TOY_MODEL = _get(parser, "model", "use_toy_model", bool, True)
-	BIG_MODEL_ID = _get(parser, "model", "model_id", str, "openai/gpt-oss-20b")
-	TOY_MODEL_ID = _get(parser, "model", "toy_model_id", str, "Qwen/Qwen3-0.6B")
+	DTYPE = _get(parser, "model", "dtype", str)
+	USE_TOY_MODEL = _get(parser, "model", "use_toy_model", bool)
+	BIG_MODEL_ID = _get(parser, "model", "model_id", str)
+	TOY_MODEL_ID = _get(parser, "model", "toy_model_id", str)
 	MODEL_ID = TOY_MODEL_ID if USE_TOY_MODEL else BIG_MODEL_ID
 
 
 	# Inference defaults
 	global TEMPERATURE, TOP_P, TOP_K, MAX_TOKENS
-	TEMPERATURE = _get(parser, "inference", "temperature", float, 0.7)
-	TOP_P = _get(parser, "inference", "top_p", float, 0.95)
-	TOP_K = _get(parser, "inference", "top_k", int, 50)
-	MAX_TOKENS = _get(parser, "inference", "max_tokens", int, 2048)
+	TEMPERATURE = _get(parser, "inference", "temperature", float)
+	TOP_P = _get(parser, "inference", "top_p", float)
+	TOP_K = _get(parser, "inference", "top_k", int)
+	MAX_TOKENS = _get(parser, "inference", "max_tokens", int)
 
 	# Debug mode
 	global DEBUG
-	DEBUG = _get(parser, "debug", "debug", bool, False)
+	DEBUG = _get(parser, "debug", "debug", bool)
 
 	# Hardware
 	global TENSOR_PARALLEL_SIZE, GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN
-	TENSOR_PARALLEL_SIZE = _get(parser, "hardware", "tensor_parallel_size", int, 1)
-	GPU_MEMORY_UTILIZATION = _get(parser, "hardware", "gpu_memory_utilization", float, 0.8)
-	MAX_MODEL_LEN = _get(parser, "hardware", "max_model_len", int, 8192)
+	TENSOR_PARALLEL_SIZE = _get(parser, "hardware", "tensor_parallel_size", int)
+	GPU_MEMORY_UTILIZATION = _get(parser, "hardware", "gpu_memory_utilization", float)
+	MAX_MODEL_LEN = _get(parser, "hardware", "max_model_len", int)
 
 	# Compilation
 	global CUDAGRAPH_MODE
 	# CUDAGraphMode for vLLM: NONE/PIECEWISE/FULL/FULL_DECODE_ONLY/FULL_AND_PIECEWISE
-	CUDAGRAPH_MODE = _get(parser, "compilation", "cudagraph_mode", str, "PIECEWISE")
+	CUDAGRAPH_MODE = _get(parser, "compilation", "cudagraph_mode", str)
 
-	# Context budget
-	global CONTEXT_BUDGET_SUMMARY_PCT
-	global CONTEXT_BUDGET_PROMPT_PCT, CONTEXT_BUDGET_OUTPUT_PCT
-	global CONTEXT_BUDGET_SAFETY_MARGIN
-	CONTEXT_BUDGET_SUMMARY_PCT = _get(parser, "context_budget", "summary_pct", float, 0.15)
-	CONTEXT_BUDGET_PROMPT_PCT = _get(parser, "context_budget", "prompt_pct", float, 0.35)
-	CONTEXT_BUDGET_OUTPUT_PCT = _get(parser, "context_budget", "output_pct", float, 0.50)
-	CONTEXT_BUDGET_SAFETY_MARGIN = _get(parser, "context_budget", "safety_margin_tokens", int, 32)
+	# Chunking settings
+	global CHUNK_SIZE, CHUNK_OVERLAP
+	CHUNK_SIZE = _get(parser, "chunking", "chunk_size", int)
+	CHUNK_OVERLAP = _get(parser, "chunking", "overlap", int)
 
 
 # Expose names in __all__
 __all__ = [
 	"_CONFIG_PATH",
+	"ConfigError",
 	"USE_TOY_MODEL",
 	"MODEL_ID",
 	"TEMPERATURE",
@@ -90,10 +94,8 @@ __all__ = [
 	"GPU_MEMORY_UTILIZATION",
 	"MAX_MODEL_LEN",
 	"CUDAGRAPH_MODE",
-	"CONTEXT_BUDGET_SUMMARY_PCT",
-	"CONTEXT_BUDGET_PROMPT_PCT",
-	"CONTEXT_BUDGET_OUTPUT_PCT",
-	"CONTEXT_BUDGET_SAFETY_MARGIN",
 	"DEBUG",
+	"CHUNK_SIZE",
+	"CHUNK_OVERLAP",
 	"load",
 ]

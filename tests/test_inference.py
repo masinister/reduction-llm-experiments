@@ -1,106 +1,119 @@
-from typing import Any, Dict, List
+"""Test key point extraction using each strategy.
+
+Tests:
+  1. DirectStrategy - Single call, no chunking
+  2. MapReduceStrategy - Map over chunks independently, then reduce
+  3. SlidingWindowStrategy - Chunks with memory carried between windows
+"""
+
+from typing import List, Optional
 from pydantic import BaseModel
 from src.core_backend import CoreBackend
-from src.pipeline import Pipeline
-from src.context_budget import ContextBudget
-import json
+from src.strategies import (
+    DirectStrategy,
+    MapReduceStrategy,
+    SlidingWindowStrategy,
+)
 import os
 
-class Person(BaseModel):
-    name: str
-    age: int
 
 class KeyPoints(BaseModel):
+    """Key points extracted from text."""
     points: List[str]
 
-def prompt_formatter(context: Dict[str, Any]) -> str:
-    return f"Extract the person's name and age from: {context['text']}"
 
-def long_context_formatter(context: Dict[str, Any]) -> str:
-    return f"Extract key points from the following text: {context['text']}"
+class Memory(BaseModel):
+    """Memory for sliding window - summary of previous points."""
+    summary: str
+
+
+def keypoints_prompt(text: str) -> str:
+    return f"Extract key points from the following text:\n\n{text}"
+
+
+def keypoints_prompt_with_memory(text: str, memory: Optional[Memory]) -> str:
+    if memory:
+        return f"Previous context: {memory.summary}\n\nExtract key points from:\n\n{text}"
+    return f"Extract key points from:\n\n{text}"
+
+
+def combine_keypoints(outputs: List[KeyPoints]) -> KeyPoints:
+    all_points = []
+    for out in outputs:
+        all_points.extend(out.points)
+    return KeyPoints(points=all_points)
+
+
+def update_memory(old: Optional[Memory], output: KeyPoints) -> Memory:
+    summary = "; ".join(output.points[:3])
+    if old:
+        return Memory(summary=f"{old.summary} | {summary}")
+    return Memory(summary=summary)
+
+
+def print_result(name: str, result: Optional[KeyPoints]) -> None:
+    print(f"\n{'=' * 60}")
+    print(f"{name}")
+    print("=" * 60)
+    if result:
+        print(f"✅ Extracted {len(result.points)} key points:")
+        for i, point in enumerate(result.points[:5], 1):
+            print(f"   {i}. {point[:80]}...")
+        if len(result.points) > 5:
+            print(f"   ... and {len(result.points) - 5} more")
+    else:
+        print("❌ Failed to extract key points")
+
 
 def main() -> None:
-    person_schema = Person.model_json_schema()
-    context = {"text": "Bob is 42 years old."}
+    """Test key point extraction with each strategy."""
+    # Load test text
+    file_path = os.path.join(os.path.dirname(__file__), "example_reduction.txt")
+    with open(file_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
 
-    # Initialize core backend and pipeline
     core = CoreBackend()
-    pipeline = Pipeline(
-        core_backend=core,
-        context_budget=ContextBudget(),
-        merger_strategy="hierarchical",
-        merger_batch_size=5,
-        use_summarization=True
-    )
-    
+
     try:
-        print("\n--- Normal Inference ---\n")
-        out = pipeline.process(
-            text=context['text'],
-            json_schema=person_schema,
-            prompt_formatter=prompt_formatter
+        # 1. Direct Strategy
+        direct = DirectStrategy(backend=core, output_model=KeyPoints)
+        result = direct.process(text=text, prompt_fn=keypoints_prompt)
+        print_result("DIRECT STRATEGY", result)
+
+        # 2. MapReduce Strategy (uses config defaults for chunk_size/overlap)
+        mapreduce = MapReduceStrategy(
+            backend=core,
+            output_model=KeyPoints,
         )
-        print(out)
-
-        print("\n--- Reasoning Mode Inference ---\n")
-        out_reason = pipeline.process(
-            text=context['text'],
-            json_schema=person_schema,
-            prompt_formatter=prompt_formatter,
-            reasoning_mode=True
+        result = mapreduce.process(
+            text=text,
+            prompt_fn=keypoints_prompt,
+            combine_fn=combine_keypoints,
         )
-        print(out_reason)
-        
-        try:
-            data = json.loads(out_reason)
-            if "reasoning_content" in data and "output" in data:
-                print("Reasoning mode structure verified.")
-            else:
-                print("Reasoning mode structure FAILED.")
-        except:
-            print("Reasoning mode output is not valid JSON.")
+        print_result("MAP-REDUCE STRATEGY", result)
 
-        print("\n--- Long Context Chunking Inference ---\n")
-
-        file_path = os.path.join(os.path.dirname(__file__), "example_reduction.txt")
-        try:
-            with open(file_path, "r", encoding="utf-8") as fh:
-                long_text = fh.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"{file_path} not found. Place example_reduction.txt alongside this test.")
-
-        key_points_schema = KeyPoints.model_json_schema()
-        context_long = {"text": long_text}
-        
-        # Force chunking with small token limit
-        # Use 20% overlap (51 tokens) to avoid breaking mid-sentence
-        out_long = pipeline.process(
-            text=long_text,
-            json_schema=key_points_schema,
-            prompt_formatter=long_context_formatter,
-            chunk_size_tokens=256,  # Small limit to force multiple chunks
-            overlap_tokens=51  # ~20% overlap for better context continuity
+        # 3. Sliding Window Strategy (uses config defaults for chunk_size/overlap)
+        sliding = SlidingWindowStrategy(
+            backend=core,
+            output_model=KeyPoints,
+            memory_model=Memory,
         )
-        print(out_long)
-        
-        try:
-            data_long = json.loads(out_long)
-            if "points" in data_long and isinstance(data_long["points"], list):
-                print("Long context chunking structure verified.")
-                print(f"Extracted {len(data_long['points'])} points.")
-            else:
-                print("Long context chunking structure FAILED.")
-        except:
-            print("Long context chunking output is not valid JSON.")
-    
+        result = sliding.process(
+            text=text,
+            prompt_fn=keypoints_prompt_with_memory,
+            combine_fn=combine_keypoints,
+            update_memory_fn=update_memory,
+        )
+        print_result("SLIDING WINDOW STRATEGY", result)
+
+        print("\n" + "=" * 60)
+        print("✅ ALL TESTS COMPLETE")
+        print("=" * 60 + "\n")
+
     finally:
-        # Clean up the vLLM engine to prevent crash on exit
         if hasattr(core, 'llm') and core.llm is not None:
-            try:
-                # Delete the LLM instance explicitly
-                del core.llm
-            except:
-                pass
+            del core.llm
+
 
 if __name__ == "__main__":
     main()

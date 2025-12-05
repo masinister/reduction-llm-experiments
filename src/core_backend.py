@@ -83,6 +83,18 @@ class CoreBackend:
         Returns:
             Generated text (may be empty string if all retries fail)
         """
+        # Apply chat template if available
+        if hasattr(self.tokenizer, 'apply_chat_template') and self.tokenizer.chat_template:
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
+            except Exception as e:
+                logger.warning("Failed to apply chat template: %s", e)
+        
         # DEBUG: Pretty-print the prompt
         if getattr(config, "DEBUG", False):
             DebugPrinter.print_prompt(prompt, sampling_params)
@@ -95,7 +107,8 @@ class CoreBackend:
                 
                 if results and results[0].outputs:
                     text = results[0].outputs[0].text or ""
-                    if text.strip():
+                    # Check for garbage output (mostly whitespace/newlines)
+                    if text.strip() and len(text.strip()) / max(len(text), 1) > 0.1:
                         # DEBUG: Pretty-print the response
                         if getattr(config, "DEBUG", False):
                             DebugPrinter.print_response(text)
