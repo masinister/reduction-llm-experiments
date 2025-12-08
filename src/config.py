@@ -53,11 +53,12 @@ def load(path: str | Path | None = None) -> None:
 
 
 	# Inference defaults
-	global TEMPERATURE, TOP_P, TOP_K, MAX_TOKENS
+	global TEMPERATURE, TOP_P, TOP_K, MAX_TOKENS, REPETITION_PENALTY
 	TEMPERATURE = _get(parser, "inference", "temperature", float)
 	TOP_P = _get(parser, "inference", "top_p", float)
 	TOP_K = _get(parser, "inference", "top_k", int)
 	MAX_TOKENS = _get(parser, "inference", "max_tokens", int)
+	REPETITION_PENALTY = _get(parser, "inference", "repetition_penalty", float)
 
 	# Debug mode
 	global DEBUG

@@ -79,6 +79,7 @@ class DirectStrategy(Strategy[T]):
         params = SamplingParams(
             max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
             temperature=temperature if temperature is not None else config.TEMPERATURE,
+            repetition_penalty=getattr(config, 'REPETITION_PENALTY', 1.0),
             structured_outputs=StructuredOutputsParams(
                 json=self.output_model.model_json_schema()
             ),
@@ -138,6 +139,7 @@ class SlidingWindowStrategy(Strategy[T], Generic[T, M]):
         params = SamplingParams(
             max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
             temperature=temperature if temperature is not None else config.TEMPERATURE,
+            repetition_penalty=getattr(config, 'REPETITION_PENALTY', 1.0),
             structured_outputs=StructuredOutputsParams(
                 json=self.output_model.model_json_schema()
             ),
