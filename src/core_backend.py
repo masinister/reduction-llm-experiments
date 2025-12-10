@@ -1,144 +1,159 @@
-"""Core LLM interaction layer.
+"""Core LLM interaction layer using instructor + vLLM server.
 
-This module provides a minimal, stateless wrapper around vLLM for generating
-completions. It is responsible ONLY for:
-  - LLM initialization and configuration
-  - Single-shot generation with sampling parameters and structured outputs
-  
-It does NOT handle chunking, merging, or orchestration logic.
+Thin wrapper around instructor for structured LLM outputs via
+an OpenAI-compatible vLLM server endpoint. Automatically starts
+and stops the vLLM server as needed.
 """
 
-from typing import Any, Dict, List, Optional
-from vllm import LLM, SamplingParams
-import logging
-import json
+import atexit
+import socket
+import subprocess
+import time
+from typing import Type, TypeVar
+
+import instructor
+from openai import OpenAI
+from pydantic import BaseModel
 
 from src import config
-from src.debug_printer import DebugPrinter
 
-logger = logging.getLogger(__name__)
+T = TypeVar('T', bound=BaseModel)
+
+# Global server process for cleanup
+_server_process: subprocess.Popen | None = None
 
 
-class CoreBackend:
-    """Minimal LLM client wrapper with dependency injection support.
+def _cleanup_server():
+    """Cleanup function to terminate server on exit."""
+    global _server_process
+    if _server_process is not None:
+        _server_process.terminate()
+        _server_process.wait(timeout=10)
+        _server_process = None
+
+
+atexit.register(_cleanup_server)
+
+
+def _is_port_open(host: str, port: int) -> bool:
+    """Check if a port is open."""
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except (OSError, socket.timeout):
+        return False
+
+
+def _parse_url(url: str) -> tuple[str, int]:
+    """Extract host and port from URL."""
+    # Remove protocol and path
+    url = url.replace("http://", "").replace("https://", "")
+    url = url.split("/")[0]
+    if ":" in url:
+        host, port = url.split(":")
+        return host, int(port)
+    return url, 8000
+
+
+class Backend:
+    """Instructor-based LLM client for structured outputs.
     
-    Designed for:
-      - Easy testing via LLM/tokenizer injection
-      - Stateless generation (no internal state between calls)
-      - Clean separation from higher-level orchestration
+    Automatically starts a vLLM server if one isn't running.
     """
-
+    
     def __init__(
         self,
-        *,
-        llm: Optional[LLM] = None,
-        tokenizer: Optional[Any] = None,
-        model_config: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Initialize the LLM backend.
+        base_url: str | None = None,
+        model: str | None = None,
+        auto_start: bool = True,
+    ):
+        """Initialize the instructor client.
         
         Args:
-            llm: Pre-initialized vLLM instance for testing/injection. If None, 
-                creates from config.
-            tokenizer: Pre-initialized tokenizer for testing. If None, uses LLM's 
-                tokenizer.
-            model_config: Optional config overrides. If None, uses module config.
+            base_url: vLLM server URL (defaults to config.VLLM_URL)
+            model: Model name (defaults to config.MODEL)
+            auto_start: Whether to auto-start vLLM server if not running
         """
-        if llm is None:
-            # Build from config with sensible defaults
-            cfg = model_config or {}
-            self.llm = LLM(
-                cfg.get('model_id', getattr(config, "MODEL_ID", "meta-llama/Llama-3.2-3B-Instruct")),
-                gpu_memory_utilization=cfg.get('gpu_memory_utilization', getattr(config, "GPU_MEMORY_UTILIZATION", None)),
-                tensor_parallel_size=cfg.get('tensor_parallel_size', getattr(config, "TENSOR_PARALLEL_SIZE", 1)),
-                max_model_len=cfg.get('max_model_len', getattr(config, "MAX_MODEL_LEN", 8192)),
-                compilation_config={"cudagraph_mode": cfg.get('cudagraph_mode', getattr(config, "CUDAGRAPH_MODE", False))},
-                dtype=cfg.get('dtype', getattr(config, "DTYPE", None)),
-            )
-        else:
-            self.llm = llm
-
-        # Tokenizer shortcut for convenience
-        self.tokenizer = tokenizer if tokenizer is not None else self.llm.get_tokenizer()
+        self.base_url = base_url or config.VLLM_URL
+        self.model = model or config.MODEL
         
-        # Store max model len for budget calculations
-        self.max_model_len = getattr(config, "MAX_MODEL_LEN", 8192)
-
-    def generate_once(
+        host, port = _parse_url(self.base_url)
+        
+        if auto_start and not _is_port_open(host, port):
+            self._start_server(port)
+        
+        self.client = instructor.from_openai(
+            OpenAI(base_url=self.base_url, api_key="not-needed"),
+            mode=instructor.Mode.JSON_SCHEMA,
+        )
+    
+    def _start_server(self, port: int):
+        """Start vLLM server and wait for it to be ready."""
+        global _server_process
+        
+        if _server_process is not None:
+            return  # Already started
+        
+        print(f"Starting vLLM server with model {self.model}...")
+        
+        cmd = [
+            "vllm", "serve", self.model,
+            "--port", str(port),
+            "--dtype", config.DTYPE,
+            "--gpu-memory-utilization", str(config.GPU_MEMORY_UTILIZATION),
+            "--max-model-len", str(config.MAX_CONTEXT),
+        ]
+        
+        _server_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        
+        # Wait for server to be ready
+        host, _ = _parse_url(self.base_url)
+        start_time = time.time()
+        timeout = config.STARTUP_TIMEOUT
+        
+        while time.time() - start_time < timeout:
+            if _is_port_open(host, port):
+                # Give it a moment to fully initialize
+                time.sleep(2)
+                print(f"vLLM server ready on port {port}")
+                return
+            time.sleep(1)
+        
+        # Timeout - kill the process
+        _server_process.terminate()
+        _server_process = None
+        raise RuntimeError(f"vLLM server failed to start within {timeout}s")
+    
+    def create(
         self,
         prompt: str,
-        sampling_params: SamplingParams,
-        max_retries: int = 2
-    ) -> str:
-        """Generate a single completion with structured output support.
-        
-        Uses llm.generate() with plain text prompts. Structured outputs
-        constrain generation to valid JSON matching the schema.
+        response_model: Type[T],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> T:
+        """Generate structured output from prompt.
         
         Args:
-            prompt: Plain text prompt
-            sampling_params: vLLM sampling configuration (includes structured outputs)
-            max_retries: Number of retry attempts on empty output
+            prompt: User prompt
+            response_model: Pydantic model for response
+            temperature: Sampling temperature
+            max_tokens: Max tokens to generate
             
         Returns:
-            Generated text (may be empty string if all retries fail)
+            Parsed Pydantic model instance
         """
-        # Apply chat template if available
-        if hasattr(self.tokenizer, 'apply_chat_template') and self.tokenizer.chat_template:
-            messages = [{"role": "user", "content": prompt}]
-            try:
-                prompt = self.tokenizer.apply_chat_template(
-                    messages, 
-                    tokenize=False, 
-                    add_generation_prompt=True
-                )
-            except Exception as e:
-                logger.warning("Failed to apply chat template: %s", e)
-        
-        # DEBUG: Pretty-print the prompt
-        if getattr(config, "DEBUG", False):
-            DebugPrinter.print_prompt(prompt, sampling_params)
-        
-        attempt = 0
-        while attempt <= max_retries:
-            attempt += 1
-            try:
-                results = self.llm.generate([prompt], sampling_params=sampling_params)
-                
-                if results and results[0].outputs:
-                    text = results[0].outputs[0].text or ""
-                    # Check for garbage output (mostly whitespace/newlines)
-                    if text.strip() and len(text.strip()) / max(len(text), 1) > 0.1:
-                        # DEBUG: Pretty-print the response
-                        if getattr(config, "DEBUG", False):
-                            DebugPrinter.print_response(text)
-                        return text
-                    
-                logger.warning(
-                    "generate_once: empty output on attempt %d/%d",
-                    attempt, max_retries + 1
-                )
-                    
-            except Exception as e:
-                logger.exception(
-                    "generate_once: LLM generation failed on attempt %d/%d: %s",
-                    attempt, max_retries + 1, e
-                )
-        
-        logger.error(
-            "generate_once: failed to produce non-empty output after %d attempts",
-            max_retries + 1
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            response_model=response_model,
+            temperature=temperature if temperature is not None else config.TEMPERATURE,
+            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
         )
-        return ""
-
-    def tokenize(self, text: str) -> List[int]:
-        """Tokenize text using the model's tokenizer."""
-        return self.tokenizer.encode(text)
-
-    def detokenize(self, token_ids: List[int]) -> str:
-        """Detokenize token IDs back to text."""
-        return self.tokenizer.decode(token_ids)
-
+    
     def count_tokens(self, text: str) -> int:
-        """Count tokens in text."""
-        return len(self.tokenize(text))
+        """Approximate token count (chars / 4)."""
+        return len(text) // 4

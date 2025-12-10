@@ -7,14 +7,11 @@ name = "reduction-llm"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "torch",
-    "transformers",
-    "vllm",
+    "instructor",
+    "openai",
     "pandas",
     "numpy",
     "pydantic",
-    "python-dotenv",
-    "flashinfer-python"
 ]
 
 [tool.setuptools.packages.find]

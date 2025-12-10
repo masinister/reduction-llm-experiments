@@ -1,102 +1,78 @@
-from __future__ import annotations
+"""Configuration loader for reduction-llm."""
 
-import os
 from pathlib import Path
 from configparser import ConfigParser
-from typing import Any
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.ini"
 
+
 class ConfigError(Exception):
-	"""Raised when a required config value is missing."""
-	pass
+    """Raised when a required config value is missing."""
+    pass
 
 
 def _get(parser: ConfigParser, section: str, key: str, type_: type):
-	"""Get a config value, raising ConfigError if missing."""
-	if not parser.has_option(section, key):
-		raise ConfigError(f"Missing required config: [{section}] {key}")
-	try:
-		if type_ is bool:
-			return parser.getboolean(section, key)
-		if type_ is int:
-			return parser.getint(section, key)
-		if type_ is float:
-			return parser.getfloat(section, key)
-		# default to string
-		return parser.get(section, key)
-	except ValueError as e:
-		raise ConfigError(f"Invalid value for [{section}] {key}: {e}")
+    """Get a config value, raising ConfigError if missing."""
+    if not parser.has_option(section, key):
+        raise ConfigError(f"Missing required config: [{section}] {key}")
+    try:
+        if type_ is bool:
+            return parser.getboolean(section, key)
+        if type_ is int:
+            return parser.getint(section, key)
+        if type_ is float:
+            return parser.getfloat(section, key)
+        return parser.get(section, key)
+    except ValueError as e:
+        raise ConfigError(f"Invalid value for [{section}] {key}: {e}")
 
 
 def load(path: str | Path | None = None) -> None:
-	if path:
-		cfg_path = Path(path)
-	elif (Path.cwd() / "config.ini").exists():
-		cfg_path = Path.cwd() / "config.ini"
-	else:
-		cfg_path = _CONFIG_PATH
+    """Load configuration from INI file."""
+    if path:
+        cfg_path = Path(path)
+    elif (Path.cwd() / "config.ini").exists():
+        cfg_path = Path.cwd() / "config.ini"
+    else:
+        cfg_path = _CONFIG_PATH
 
-	if not cfg_path.exists():
-		raise ConfigError(f"Config file not found: {cfg_path}")
+    if not cfg_path.exists():
+        raise ConfigError(f"Config file not found: {cfg_path}")
 
-	parser = ConfigParser()
-	parser.read(cfg_path)
+    parser = ConfigParser()
+    parser.read(cfg_path)
 
-	# Model settings
-	global USE_TOY_MODEL, MODEL_ID, DTYPE
-	DTYPE = _get(parser, "model", "dtype", str)
-	USE_TOY_MODEL = _get(parser, "model", "use_toy_model", bool)
-	BIG_MODEL_ID = _get(parser, "model", "model_id", str)
-	TOY_MODEL_ID = _get(parser, "model", "toy_model_id", str)
-	MODEL_ID = TOY_MODEL_ID if USE_TOY_MODEL else BIG_MODEL_ID
+    # Server settings
+    global VLLM_URL, MODEL, DTYPE, GPU_MEMORY_UTILIZATION, STARTUP_TIMEOUT
+    VLLM_URL = _get(parser, "server", "vllm_url", str)
+    MODEL = _get(parser, "server", "model", str)
+    DTYPE = _get(parser, "server", "dtype", str)
+    GPU_MEMORY_UTILIZATION = _get(parser, "server", "gpu_memory_utilization", float)
+    STARTUP_TIMEOUT = _get(parser, "server", "startup_timeout", int)
 
+    # Inference settings
+    global TEMPERATURE, MAX_TOKENS, MAX_CONTEXT
+    TEMPERATURE = _get(parser, "inference", "temperature", float)
+    MAX_TOKENS = _get(parser, "inference", "max_tokens", int)
+    MAX_CONTEXT = _get(parser, "inference", "max_context", int)
 
-	# Inference defaults
-	global TEMPERATURE, TOP_P, TOP_K, MAX_TOKENS, REPETITION_PENALTY
-	TEMPERATURE = _get(parser, "inference", "temperature", float)
-	TOP_P = _get(parser, "inference", "top_p", float)
-	TOP_K = _get(parser, "inference", "top_k", int)
-	MAX_TOKENS = _get(parser, "inference", "max_tokens", int)
-	REPETITION_PENALTY = _get(parser, "inference", "repetition_penalty", float)
-
-	# Debug mode
-	global DEBUG
-	DEBUG = _get(parser, "debug", "debug", bool)
-
-	# Hardware
-	global TENSOR_PARALLEL_SIZE, GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN
-	TENSOR_PARALLEL_SIZE = _get(parser, "hardware", "tensor_parallel_size", int)
-	GPU_MEMORY_UTILIZATION = _get(parser, "hardware", "gpu_memory_utilization", float)
-	MAX_MODEL_LEN = _get(parser, "hardware", "max_model_len", int)
-
-	# Compilation
-	global CUDAGRAPH_MODE
-	# CUDAGraphMode for vLLM: NONE/PIECEWISE/FULL/FULL_DECODE_ONLY/FULL_AND_PIECEWISE
-	CUDAGRAPH_MODE = _get(parser, "compilation", "cudagraph_mode", str)
-
-	# Chunking settings
-	global CHUNK_SIZE, CHUNK_OVERLAP
-	CHUNK_SIZE = _get(parser, "chunking", "chunk_size", int)
-	CHUNK_OVERLAP = _get(parser, "chunking", "overlap", int)
+    # Chunking settings
+    global CHUNK_SIZE, CHUNK_OVERLAP
+    CHUNK_SIZE = _get(parser, "chunking", "chunk_size", int)
+    CHUNK_OVERLAP = _get(parser, "chunking", "overlap", int)
 
 
-# Expose names in __all__
 __all__ = [
-	"_CONFIG_PATH",
-	"ConfigError",
-	"USE_TOY_MODEL",
-	"MODEL_ID",
-	"TEMPERATURE",
-	"TOP_P",
-	"TOP_K",
-	"MAX_TOKENS",
-	"TENSOR_PARALLEL_SIZE",
-	"GPU_MEMORY_UTILIZATION",
-	"MAX_MODEL_LEN",
-	"CUDAGRAPH_MODE",
-	"DEBUG",
-	"CHUNK_SIZE",
-	"CHUNK_OVERLAP",
-	"load",
+    "ConfigError",
+    "VLLM_URL",
+    "MODEL",
+    "DTYPE",
+    "GPU_MEMORY_UTILIZATION",
+    "STARTUP_TIMEOUT",
+    "TEMPERATURE",
+    "MAX_TOKENS",
+    "MAX_CONTEXT",
+    "CHUNK_SIZE",
+    "CHUNK_OVERLAP",
+    "load",
 ]

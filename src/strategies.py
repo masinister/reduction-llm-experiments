@@ -1,34 +1,40 @@
-"""Lightweight processing strategies for long contexts.
+"""Chunking strategies for long context processing.
 
-Strategies build on CoreBackend's structured output interface using Pydantic
-models. Each strategy handles a different approach to processing text that
-may exceed the model's context window.
+Two approaches for handling text that exceeds context limits:
+- Sequential: Process chunks with memory context, LLM combines at end
+- Hierarchical: Process chunks independently, LLM combines all at once
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic, List, Optional, Type, TypeVar
+from typing import Callable, Type, TypeVar
 from pydantic import BaseModel
-from vllm.sampling_params import SamplingParams, StructuredOutputsParams
-import logging
 
-from src.core_backend import CoreBackend
-from src.utils import parse_structured_output
+from src.core_backend import Backend
 from src import config
 
-logger = logging.getLogger(__name__)
-
 T = TypeVar('T', bound=BaseModel)
-M = TypeVar('M', bound=BaseModel)
 
 
-def chunk_text(tokenizer: Any, text: str, chunk_size: int, overlap: int = 0) -> List[str]:
-    """Split text into chunks by token count.
+def needs_chunking(backend: Backend, text: str, buffer: int = 1000) -> bool:
+    """Check if text needs chunking based on token count.
     
     Args:
-        tokenizer: Tokenizer with encode/decode methods
-        text: Text to chunk
-        chunk_size: Max tokens per chunk
-        overlap: Tokens to overlap between chunks
+        backend: Backend instance for token counting
+        text: Text to check
+        buffer: Token buffer for prompt/output overhead
+        
+    Returns:
+        True if text exceeds context limit minus buffer
+    """
+    return backend.count_tokens(text) > config.MAX_CONTEXT - buffer
+
+
+def chunk_text(text: str, chunk_size: int, overlap: int = 0) -> list[str]:
+    """Split text into chunks by approximate token count.
+    
+    Args:
+        text: Text to split
+        chunk_size: Target tokens per chunk (chars / 4)
+        overlap: Token overlap between chunks
         
     Returns:
         List of text chunks
@@ -36,258 +42,108 @@ def chunk_text(tokenizer: Any, text: str, chunk_size: int, overlap: int = 0) -> 
     if not text:
         return [""]
     
-    tokens = tokenizer.encode(text)
-    if len(tokens) <= chunk_size:
+    # Convert to char counts (approx 4 chars per token)
+    char_size = chunk_size * 4
+    char_overlap = overlap * 4
+    
+    if len(text) <= char_size:
         return [text]
     
     chunks = []
-    step = max(1, chunk_size - overlap)
-    for i in range(0, len(tokens), step):
-        chunk_tokens = tokens[i:i + chunk_size]
-        chunks.append(tokenizer.decode(chunk_tokens))
-        if i + chunk_size >= len(tokens):
+    step = max(1, char_size - char_overlap)
+    for i in range(0, len(text), step):
+        chunks.append(text[i:i + char_size])
+        if i + char_size >= len(text):
             break
     
     return chunks
 
 
-class Strategy(ABC, Generic[T]):
-    """Base class for processing strategies."""
+def sequential_extract(
+    backend: Backend,
+    text: str,
+    response_model: Type[T],
+    extract_prompt: Callable[[str, str | None], str],
+    combine_prompt: Callable[[list[str]], str],
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> T:
+    """Process chunks sequentially with memory, then LLM combines.
     
-    def __init__(self, backend: CoreBackend, output_model: Type[T]):
-        self.backend = backend
-        self.output_model = output_model
+    Each chunk sees a summary of previous chunks. After all chunks are
+    processed, an LLM call combines the partial results.
     
-    @abstractmethod
-    def process(self, text: str, prompt_fn: Callable[[str], str], **kwargs) -> Optional[T]:
-        """Process text and return structured output."""
-        pass
-
-
-class DirectStrategy(Strategy[T]):
-    """Process text directly in a single call. No chunking."""
-    
-    def process(
-        self,
-        text: str,
-        prompt_fn: Callable[[str], str],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-    ) -> Optional[T]:
-        prompt = prompt_fn(text)
+    Args:
+        backend: Backend instance
+        text: Input text
+        response_model: Pydantic model for final output
+        extract_prompt: (chunk, previous_summary | None) -> prompt
+        combine_prompt: (list of partial outputs as JSON) -> prompt
+        chunk_size: Tokens per chunk (defaults to config)
+        overlap: Token overlap (defaults to config)
         
-        params = SamplingParams(
-            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-            temperature=temperature if temperature is not None else config.TEMPERATURE,
-            repetition_penalty=getattr(config, 'REPETITION_PENALTY', 1.0),
-            structured_outputs=StructuredOutputsParams(
-                json=self.output_model.model_json_schema()
-            ),
-        )
-        
-        output = self.backend.generate_once(prompt, params)
-        return parse_structured_output(output, self.output_model)
-
-
-class SlidingWindowStrategy(Strategy[T], Generic[T, M]):
-    """Process chunks with structured memory carried between windows.
-    
-    Each chunk produces output of type T. A memory model M accumulates
-    state across chunks. Final output combines all chunk outputs.
+    Returns:
+        Combined structured output
     """
+    chunk_size = chunk_size or config.CHUNK_SIZE
+    overlap = overlap or config.CHUNK_OVERLAP
     
-    def __init__(
-        self,
-        backend: CoreBackend,
-        output_model: Type[T],
-        memory_model: Type[M],
-        chunk_size: Optional[int] = None,
-        overlap: Optional[int] = None,
-    ):
-        super().__init__(backend, output_model)
-        self.memory_model = memory_model
-        self.chunk_size = chunk_size if chunk_size is not None else config.CHUNK_SIZE
-        self.overlap = overlap if overlap is not None else config.CHUNK_OVERLAP
+    if not needs_chunking(backend, text):
+        return backend.create(extract_prompt(text, None), response_model)
     
-    def process(
-        self,
-        text: str,
-        prompt_fn: Callable[[str, Optional[M]], str],
-        combine_fn: Callable[[List[T]], T],
-        update_memory_fn: Callable[[Optional[M], T], M],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-    ) -> Optional[T]:
-        """Process text with sliding window and memory.
-        
-        Args:
-            text: Input text
-            prompt_fn: (chunk_text, memory) -> prompt string
-            combine_fn: Combine all chunk outputs into final output
-            update_memory_fn: (old_memory, chunk_output) -> new_memory
-            max_tokens: Max output tokens per chunk
-            temperature: Sampling temperature
-            
-        Returns:
-            Combined structured output
-        """
-        chunks = chunk_text(self.backend.tokenizer, text, self.chunk_size, self.overlap)
-        
-        memory: Optional[M] = None
-        outputs: List[T] = []
-        
-        params = SamplingParams(
-            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-            temperature=temperature if temperature is not None else config.TEMPERATURE,
-            repetition_penalty=getattr(config, 'REPETITION_PENALTY', 1.0),
-            structured_outputs=StructuredOutputsParams(
-                json=self.output_model.model_json_schema()
-            ),
-        )
-        
-        for i, chunk in enumerate(chunks):
-            prompt = prompt_fn(chunk, memory)
-            
-            raw = self.backend.generate_once(prompt, params)
-            parsed = parse_structured_output(raw, self.output_model)
-            
-            if parsed:
-                outputs.append(parsed)
-                memory = update_memory_fn(memory, parsed)
-            else:
-                logger.warning("Chunk %d/%d: failed to parse output", i + 1, len(chunks))
-        
-        if not outputs:
-            return None
-        
-        return combine_fn(outputs)
+    chunks = chunk_text(text, chunk_size, overlap)
+    partials: list[str] = []
+    summary: str | None = None
+    
+    for chunk in chunks:
+        result = backend.create(extract_prompt(chunk, summary), response_model)
+        result_json = result.model_dump_json()
+        partials.append(result_json)
+        # Use the output as context for next chunk
+        summary = result_json
+    
+    # LLM combines all partial results
+    return backend.create(combine_prompt(partials), response_model)
 
 
-class MapReduceStrategy(Strategy[T]):
-    """Map over chunks independently, then reduce to final output.
+def hierarchical_extract(
+    backend: Backend,
+    text: str,
+    response_model: Type[T],
+    extract_prompt: Callable[[str], str],
+    combine_prompt: Callable[[list[str]], str],
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> T:
+    """Process chunks independently, then LLM combines all.
     
-    Simpler than SlidingWindow - no memory between chunks.
-    Good for tasks where chunks are independent.
+    Each chunk is processed without knowledge of others.
+    All results are combined in a single LLM call at the end.
+    
+    Args:
+        backend: Backend instance
+        text: Input text
+        response_model: Pydantic model for final output
+        extract_prompt: (chunk) -> prompt
+        combine_prompt: (list of partial outputs as JSON) -> prompt
+        chunk_size: Tokens per chunk (defaults to config)
+        overlap: Token overlap (defaults to config)
+        
+    Returns:
+        Combined structured output
     """
+    chunk_size = chunk_size or config.CHUNK_SIZE
+    overlap = overlap or config.CHUNK_OVERLAP
     
-    def __init__(
-        self,
-        backend: CoreBackend,
-        output_model: Type[T],
-        chunk_size: Optional[int] = None,
-        overlap: Optional[int] = None,
-    ):
-        super().__init__(backend, output_model)
-        self.chunk_size = chunk_size if chunk_size is not None else config.CHUNK_SIZE
-        self.overlap = overlap if overlap is not None else config.CHUNK_OVERLAP
+    if not needs_chunking(backend, text):
+        return backend.create(extract_prompt(text), response_model)
     
-    def process(
-        self,
-        text: str,
-        prompt_fn: Callable[[str], str],
-        combine_fn: Callable[[List[T]], T],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-    ) -> Optional[T]:
-        """Map prompt over chunks, combine results.
-        
-        Args:
-            text: Input text
-            prompt_fn: (chunk_text) -> prompt string
-            combine_fn: Combine all chunk outputs into final output
-            max_tokens: Max output tokens per chunk
-            temperature: Sampling temperature
-            
-        Returns:
-            Combined structured output
-        """
-        chunks = chunk_text(self.backend.tokenizer, text, self.chunk_size, self.overlap)
-        
-        params = SamplingParams(
-            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-            temperature=temperature if temperature is not None else config.TEMPERATURE,
-            structured_outputs=StructuredOutputsParams(
-                json=self.output_model.model_json_schema()
-            ),
-        )
-        
-        outputs: List[T] = []
-        for i, chunk in enumerate(chunks):
-            prompt = prompt_fn(chunk)
-            raw = self.backend.generate_once(prompt, params)
-            parsed = parse_structured_output(raw, self.output_model)
-            
-            if parsed:
-                outputs.append(parsed)
-            else:
-                logger.warning("Chunk %d/%d: failed to parse output", i + 1, len(chunks))
-        
-        if not outputs:
-            return None
-        
-        return combine_fn(outputs)
-
-
-class StreamingStrategy(Strategy[T]):
-    """Process chunks and concatenate outputs directly.
+    chunks = chunk_text(text, chunk_size, overlap)
+    partials: list[str] = []
     
-    Simplest strategy for position-independent tasks like conversion.
-    No combining logic - just concatenates a field from each output.
-    """
+    for chunk in chunks:
+        result = backend.create(extract_prompt(chunk), response_model)
+        partials.append(result.model_dump_json())
     
-    def __init__(
-        self,
-        backend: CoreBackend,
-        output_model: Type[T],
-        chunk_size: Optional[int] = None,
-        overlap: Optional[int] = None,
-    ):
-        super().__init__(backend, output_model)
-        self.chunk_size = chunk_size if chunk_size is not None else config.CHUNK_SIZE
-        self.overlap = overlap if overlap is not None else config.CHUNK_OVERLAP
-    
-    def process(
-        self,
-        text: str,
-        prompt_fn: Callable[[str], str],
-        extract_fn: Callable[[T], str],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        separator: str = "",
-    ) -> str:
-        """Process chunks and concatenate extracted field.
-        
-        Args:
-            text: Input text
-            prompt_fn: (chunk_text) -> prompt string
-            extract_fn: Extract string from parsed output
-            max_tokens: Max output tokens per chunk
-            temperature: Sampling temperature
-            separator: String to join outputs
-            
-        Returns:
-            Concatenated string output
-        """
-        chunks = chunk_text(self.backend.tokenizer, text, self.chunk_size, self.overlap)
-        
-        params = SamplingParams(
-            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-            temperature=temperature if temperature is not None else config.TEMPERATURE,
-            structured_outputs=StructuredOutputsParams(
-                json=self.output_model.model_json_schema()
-            ),
-        )
-        
-        results: List[str] = []
-        for i, chunk in enumerate(chunks):
-            prompt = prompt_fn(chunk)
-            raw = self.backend.generate_once(prompt, params)
-            parsed = parse_structured_output(raw, self.output_model)
-            
-            if parsed:
-                results.append(extract_fn(parsed))
-            else:
-                logger.warning("Chunk %d/%d: failed to parse, using original", i + 1, len(chunks))
-                results.append(chunk)  # Fallback to original
-        
-        return separator.join(results)
+    # LLM combines all partial results
+    return backend.create(combine_prompt(partials), response_model)
