@@ -203,7 +203,10 @@ def main():
                 **reduction.model_dump()
             }
             results.append(result)
+            print(f"[{entry_key}] Extraction successful:")
+            print(json.dumps(result, indent=2))
         else:
+            print(f"[{entry_key}] Extraction failed")
             failed += 1
     
     # Save results
