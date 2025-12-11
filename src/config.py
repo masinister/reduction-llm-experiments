@@ -43,11 +43,12 @@ def load(path: str | Path | None = None) -> None:
     parser.read(cfg_path)
 
     # Server settings
-    global VLLM_URL, MODEL, DTYPE, GPU_MEMORY_UTILIZATION, STARTUP_TIMEOUT
+    global VLLM_URL, MODEL, DTYPE, GPU_MEMORY_UTILIZATION, TENSOR_PARALLEL_SIZE, STARTUP_TIMEOUT
     VLLM_URL = _get(parser, "server", "vllm_url", str)
     MODEL = _get(parser, "server", "model", str)
     DTYPE = _get(parser, "server", "dtype", str)
     GPU_MEMORY_UTILIZATION = _get(parser, "server", "gpu_memory_utilization", float)
+    TENSOR_PARALLEL_SIZE = _get(parser, "server", "tensor_parallel_size", int)
     STARTUP_TIMEOUT = _get(parser, "server", "startup_timeout", int)
 
     # Inference settings
@@ -68,6 +69,7 @@ __all__ = [
     "MODEL",
     "DTYPE",
     "GPU_MEMORY_UTILIZATION",
+    "TENSOR_PARALLEL_SIZE",
     "STARTUP_TIMEOUT",
     "TEMPERATURE",
     "MAX_TOKENS",

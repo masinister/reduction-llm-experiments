@@ -101,6 +101,7 @@ class Backend:
             "--port", str(port),
             "--dtype", config.DTYPE,
             "--gpu-memory-utilization", str(config.GPU_MEMORY_UTILIZATION),
+            "--tensor-parallel-size", str(config.TENSOR_PARALLEL_SIZE),
             "--max-model-len", str(config.MAX_CONTEXT),
         ]
         
