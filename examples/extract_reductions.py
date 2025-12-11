@@ -117,8 +117,9 @@ TEXT:
 {text}
 
 IMPORTANT: 
+- Match (or exceed) the rigor of the provided reduction.
 - Convert ALL LaTeX to plain text.
-- Gadget properties require rigorous proofs.
+- Gadget properties require proofs.
 - Only include definitions/lemmas if explicitly present."""
 
 
