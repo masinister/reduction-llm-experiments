@@ -135,3 +135,31 @@ def print_error(error: Exception | str) -> None:
     print(_header("ERROR", RED), flush=True)
     print(f"  {RED}{error}{RESET}", flush=True)
     print(f"\n{DIM}{_box_line('·')}{RESET}\n", flush=True)
+
+
+def print_raw_response(raw_response: Any) -> None:
+    """Print the entire raw API response for debugging."""
+    print(_header("RAW RESPONSE", MAGENTA), flush=True)
+    
+    if raw_response is None:
+        print(f"{DIM}  [No raw response available]{RESET}", flush=True)
+        return
+    
+    try:
+        # Try to convert to dict for pretty printing
+        if hasattr(raw_response, 'model_dump'):
+            data = raw_response.model_dump()
+        elif hasattr(raw_response, 'to_dict'):
+            data = raw_response.to_dict()
+        elif hasattr(raw_response, '__dict__'):
+            data = raw_response.__dict__
+        else:
+            data = raw_response
+        
+        print(_format_json(data), flush=True)
+    except Exception as e:
+        # Fallback to repr
+        print(f"  {repr(raw_response)}", flush=True)
+        print(f"{DIM}  [Serialization error: {e}]{RESET}", flush=True)
+    
+    print(f"\n{DIM}{_box_line('·')}{RESET}\n", flush=True)

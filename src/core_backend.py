@@ -194,6 +194,11 @@ class Backend:
             print(f"\n[Request #{request_num}] Completed in {elapsed:.2f}s")
             print(f"  Running avg: {avg_time:.2f}s/request")
             print(f"  Total requests: {_request_count}, Total time: {_total_time:.1f}s")
+            
+            # Print raw response for debugging
+            raw_response = getattr(response, '_raw_response', None)
+            debug_printer.print_raw_response(raw_response)
+            
             debug_printer.print_response(response)
         elif elapsed > 10:  # Always warn on slow requests
             print(f"\n[SLOW] Request #{request_num} took {elapsed:.2f}s (avg: {avg_time:.2f}s)")
