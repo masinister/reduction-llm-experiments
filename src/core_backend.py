@@ -16,6 +16,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from src import config
+from src import debug_printer
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -147,13 +148,21 @@ class Backend:
         Returns:
             Parsed Pydantic model instance
         """
-        return self.client.chat.completions.create(
+        if config.DEBUG:
+            debug_printer.print_prompt(prompt)
+        
+        response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             response_model=response_model,
             temperature=temperature if temperature is not None else config.TEMPERATURE,
             max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
         )
+        
+        if config.DEBUG:
+            debug_printer.print_response(response)
+        
+        return response
     
     def count_tokens(self, text: str) -> int:
         """Approximate token count (chars / 4)."""
