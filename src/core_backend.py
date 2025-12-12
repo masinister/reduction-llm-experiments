@@ -177,7 +177,8 @@ class Backend:
                 response_model=response_model,
                 temperature=temperature if temperature is not None else config.TEMPERATURE,
                 max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-                max_retries=1,  # Disable instructor's retry loop to prevent context accumulation
+                max_retries=2,
+                extra_body={"repetition_penalty": config.REPETITION_PENALTY},
             )
         except Exception as e:
             elapsed = time.time() - start_time

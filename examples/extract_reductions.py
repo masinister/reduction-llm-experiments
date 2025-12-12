@@ -7,7 +7,6 @@ the sequential chunking strategy when needed.
 import argparse
 import json
 import os
-from typing import Optional
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -16,7 +15,6 @@ from tqdm import tqdm
 from src import config
 from src.core_backend import Backend
 from src.strategies import sequential_extract
-from src.utils import model_field_descriptions
 
 config.load()
 
@@ -33,125 +31,124 @@ class ProblemDefinition(BaseModel):
     yes_condition: str = Field(description="The condition that makes an instance a YES instance")
 
 
-class GadgetProperty(BaseModel):
-    """A property of a gadget with its proof."""
-    
-    statement: str = Field(description="The property statement")
-    proof: str = Field(description="Proof that the gadget satisfies this property")
-
-
-class Gadget(BaseModel):
-    """A gadget used in a reduction construction."""
-    
-    name: str = Field(description="Name or identifier for the gadget (e.g., 'variable gadget', 'clause gadget')")
-    description: str = Field(description="What the gadget represents or encodes")
-    construction: str = Field(description="How the gadget is constructed (vertices, edges, elements, etc.)")
-    properties: Optional[list[GadgetProperty]] = Field(default=None, description="Properties the gadget satisfies, with proofs")
-
-
-class Lemma(BaseModel):
-    """An external technical result used in the reduction (e.g., CRT, algebraic identities)."""
-    
-    name: Optional[str] = Field(default=None, description="Name of the lemma/theorem if well-known (e.g., 'Chinese Remainder Theorem')")
-    statement: str = Field(description="The statement of the lemma")
-    usage: str = Field(description="How this lemma is applied in the reduction")
-
-
 class Reduction(BaseModel):
     """Structured representation of a computational reduction proof."""
     
-    # Problem definitions
-    source_problem: str = Field(description="The source problem being reduced from")
-    target_problem: str = Field(description="The target problem being reduced to")
-    source_definition: Optional[ProblemDefinition] = Field(default=None, description="Formal definition of the source problem")
-    target_definition: Optional[ProblemDefinition] = Field(default=None, description="Formal definition of the target problem")
-    
-    # Auxiliary content
-    definitions: Optional[list[str]] = Field(default=None, description="Any auxiliary definitions introduced (e.g., terminology, notation)")
-    lemmas: Optional[list[Lemma]] = Field(default=None, description="Technical lemmas required for the proof")
-    gadgets: Optional[list[Gadget]] = Field(default=None, description="Gadgets used in the reduction construction")
-    
-    # Core reduction content
-    reduction_steps: list[str] = Field(description="Step-by-step procedure for the reduction")
+    source_problem: str = Field(description="The source problem being reduced from (e.g., '3-SAT')")
+    target_problem: str = Field(description="The target problem being reduced to (e.g., 'CLIQUE')")
+    source_definition: ProblemDefinition = Field(description="Formal definition of the source problem")
+    target_definition: ProblemDefinition = Field(description="Formal definition of the target problem")
+    reduction_steps: list[str] = Field(description="Step-by-step construction procedure transforming a source instance to a target instance")
     forward_proof: str = Field(description="Proof that YES instance of source implies YES instance of target")
     backward_proof: str = Field(description="Proof that YES instance of target implies YES instance of source")
-    key_insight: Optional[str] = Field(default=None, description="The key idea that makes this reduction work")
+    key_insight: str = Field(description="The key idea or intuition that makes this reduction work")
 
 
 # ============================================================================
 # Prompts
 # ============================================================================
 
-def extract_prompt(text: str, previous: str | None) -> str:
-    """Create extraction prompt, optionally with context from previous chunk."""
-    context = ""
-    if previous:
-        context = f"\n\nPreviously extracted (continue from here, do not repeat):\n{previous[:500]}..."
+def make_extract_prompt(source_name: str, source_def: str, target_name: str, target_def: str):
+    """Create an extraction prompt function with source/target definitions baked in."""
     
-    field_descriptions = model_field_descriptions(Reduction)
-    
-    return f"""Extract information from this mathematical reduction proof.
+    def extract_prompt(text: str, previous: str | None) -> str:
+        context = ""
+        if previous:
+            context = f"\n\n[CONTEXT FROM PREVIOUS CHUNK - continue from here, do not repeat:]\n{previous[:1000]}..."
+        
+        return f"""Extract a structured representation of this computational reduction.
 
-Instructions:
-{field_descriptions}
+*** CRITICAL: ALL OUTPUT MUST BE PLAIN TEXT - NO LATEX ***
+Convert all math notation to readable plain text:
+- \\land, \\wedge -> "AND"
+- \\lor, \\vee -> "OR"  
+- \\neg, \\lnot -> "NOT"
+- \\in -> "in"
+- \\subseteq -> "subset of"
+- \\forall -> "for all"
+- \\exists -> "there exists"
+- \\implies, \\Rightarrow -> "implies" or "=>"
+- \\iff, \\Leftrightarrow -> "if and only if"
+- $x_i$ -> "x_i"
+- \\textsc{{Name}} -> "NAME"
+- \\Big, \\big, \\left, \\right -> remove entirely
+- Remove all \\begin{{...}}, \\end{{...}}, \\item, etc.
 
-EXTRACTION GUIDELINES:
+=== PROBLEM DEFINITIONS (for reference) ===
 
-1. PROBLEM DEFINITIONS: Extract the formal definition of both problems.
-   - input_format: What is given as input (e.g., "a graph G and integer k")
-   - yes_condition: When is the answer YES (e.g., "G has a clique of size k")
+SOURCE PROBLEM: {source_name}
+{source_def}
 
-2. GADGETS: If the reduction uses gadgets, extract each with:
-   - name, description, construction
-   - properties: Each property needs a rigorous proof
+TARGET PROBLEM: {target_name}
+{target_def}
 
-3. LEMMAS: If necessary, extract technical lemmas with full proofs (not sketches).
-
-4. CORE CONTENT:
-   - reduction_steps: Atomic construction steps
-   - forward_proof / backward_proof: Full proofs
-   - key_insight: The core idea
-{context}
-
-TEXT:
+=== REDUCTION PROOF TEXT ===
 {text}
 
-IMPORTANT: 
-- Match (or exceed) the rigor of the provided reduction.
-- Convert ALL LaTeX to plain text.
-- Gadget properties require proofs.
-- Only include definitions/lemmas if explicitly present."""
+=== FIELDS TO EXTRACT ===
+
+1. source_problem: "{source_name}"
+
+2. target_problem: "{target_name}"
+
+3. source_definition: Parse from the source problem definition above:
+   - name: Problem name
+   - input_format: What is given as input
+   - yes_condition: Condition for YES output
+
+4. target_definition: Parse from the target problem definition above:
+   - name: Problem name
+   - input_format: What is given as input
+   - yes_condition: Condition for YES output
+
+5. reduction_steps: List of atomic construction steps from the reduction proof.
+   Each step should be self-contained.
+
+6. forward_proof: From the proof, extract the argument that:
+   source is YES => constructed target is YES
+
+7. backward_proof: From the proof, extract the argument that:
+   constructed target is YES => source is YES
+
+8. key_insight: The central idea that makes this reduction work.
+{context}
+
+Remember: Output ONLY plain text. No backslashes, no LaTeX commands."""
+    
+    return extract_prompt
 
 
 def combine_prompt(partials: list[str]) -> str:
     """Create prompt to combine partial extractions."""
     joined = "\n---\n".join(partials)
-    return f"""You have multiple partial extractions from different chunks of a reduction proof.
-Combine them into a single coherent Reduction.
+    return f"""Combine these partial extractions from chunks of a reduction proof into a single coherent Reduction.
 
-MERGING RULES:
-- source_definition / target_definition: Use the most complete version
-- definitions: Merge lists, remove duplicates
-- gadgets: Merge gadget lists; combine info for same gadget
-- lemmas: Merge lists, remove duplicates
-- reduction_steps: Merge into complete sequence, maintain order
-- forward_proof / backward_proof: Combine into coherent proofs
-- key_insight: Pick the best version
+Merge rules:
+- Use the most complete version of each definition
+- Merge reduction_steps into complete sequence, maintain order
+- Pick the best key_insight
 
 PARTIAL EXTRACTIONS:
-{joined}
-
-Produce the final combined Reduction."""
+{joined}"""
 
 
 # ============================================================================
 # Processing
 # ============================================================================
 
-def extract_reduction(backend: Backend, text: str) -> Optional[Reduction]:
-    """Extract structured reduction from text."""
+def extract_reduction(
+    backend: Backend,
+    text: str,
+    source_name: str,
+    source_def: str,
+    target_name: str,
+    target_def: str,
+) -> Reduction:
+    """Extract structured reduction from text with problem definitions."""
     if not text or not text.strip():
         return None
+    
+    extract_prompt = make_extract_prompt(source_name, source_def, target_name, target_def)
     
     try:
         return sequential_extract(
@@ -194,13 +191,20 @@ def main():
     for idx, row in tqdm(df.iterrows(), total=len(df)):
         entry_key = row.get('entry_key', f'row_{idx}')
         text = row.get('reduction_full_text', '')
+        source_name = row.get('source', '')
+        source_def = row.get('source_text', '')
+        target_name = row.get('target', '')
+        target_def = row.get('target_text', '')
         
         print(f"\n{'#'*70}")
         print(f"# [{idx+1}/{len(df)}] Processing: {entry_key}")
+        print(f"# {source_name} -> {target_name}")
         print(f"# Input text: {len(text):,} chars (~{len(text)//4:,} tokens)")
         print(f"{'#'*70}")
         
-        reduction = extract_reduction(backend, text)
+        reduction = extract_reduction(
+            backend, text, source_name, source_def, target_name, target_def
+        )
         
         if reduction:
             result = {

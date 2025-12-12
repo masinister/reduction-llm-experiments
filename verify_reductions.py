@@ -54,6 +54,32 @@ def format_reduction(reduction: dict, index: int, total: int) -> str:
     lines.append(f"  Difficulty: {difficulty}")
     lines.append("")
     
+    # Source definition
+    lines.append("-" * 40)
+    lines.append("  SOURCE PROBLEM DEFINITION")
+    lines.append("-" * 40)
+    source_def = reduction.get("source_definition", {})
+    if isinstance(source_def, dict):
+        lines.append(f"  Name: {source_def.get('name', 'N/A')}")
+        lines.append(f"  Input: {wrap_text(source_def.get('input_format', 'N/A'), width=72, indent='         ')}")
+        lines.append(f"  YES if: {wrap_text(source_def.get('yes_condition', 'N/A'), width=70, indent='          ')}")
+    else:
+        lines.append(f"  {source_def}")
+    lines.append("")
+    
+    # Target definition
+    lines.append("-" * 40)
+    lines.append("  TARGET PROBLEM DEFINITION")
+    lines.append("-" * 40)
+    target_def = reduction.get("target_definition", {})
+    if isinstance(target_def, dict):
+        lines.append(f"  Name: {target_def.get('name', 'N/A')}")
+        lines.append(f"  Input: {wrap_text(target_def.get('input_format', 'N/A'), width=72, indent='         ')}")
+        lines.append(f"  YES if: {wrap_text(target_def.get('yes_condition', 'N/A'), width=70, indent='          ')}")
+    else:
+        lines.append(f"  {target_def}")
+    lines.append("")
+    
     # Reduction steps
     lines.append("-" * 40)
     lines.append("  REDUCTION STEPS")
@@ -61,7 +87,7 @@ def format_reduction(reduction: dict, index: int, total: int) -> str:
     steps = reduction.get("reduction_steps", [])
     for i, step in enumerate(steps, 1):
         # Wrap long lines
-        wrapped = wrap_text(step, width=76, indent="    ")
+        wrapped = wrap_text(step, width=72, indent="      ")
         lines.append(f"  {i}. {wrapped}")
     lines.append("")
     

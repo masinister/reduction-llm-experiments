@@ -52,10 +52,11 @@ def load(path: str | Path | None = None) -> None:
     STARTUP_TIMEOUT = _get(parser, "server", "startup_timeout", int)
 
     # Inference settings
-    global TEMPERATURE, MAX_TOKENS, MAX_CONTEXT
+    global TEMPERATURE, MAX_TOKENS, MAX_CONTEXT, REPETITION_PENALTY
     TEMPERATURE = _get(parser, "inference", "temperature", float)
     MAX_TOKENS = _get(parser, "inference", "max_tokens", int)
     MAX_CONTEXT = _get(parser, "inference", "max_context", int)
+    REPETITION_PENALTY = _get(parser, "inference", "repetition_penalty", float)
 
     # Chunking settings
     global CHUNK_SIZE, CHUNK_OVERLAP
@@ -78,6 +79,7 @@ __all__ = [
     "TEMPERATURE",
     "MAX_TOKENS",
     "MAX_CONTEXT",
+    "REPETITION_PENALTY",
     "CHUNK_SIZE",
     "CHUNK_OVERLAP",
     "DEBUG",
