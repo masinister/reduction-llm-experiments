@@ -62,6 +62,10 @@ def load(path: str | Path | None = None) -> None:
     CHUNK_SIZE = _get(parser, "chunking", "chunk_size", int)
     CHUNK_OVERLAP = _get(parser, "chunking", "overlap", int)
 
+    # Debug settings
+    global DEBUG
+    DEBUG = _get(parser, "debug", "enabled", bool)
+
 
 __all__ = [
     "ConfigError",
@@ -76,5 +80,6 @@ __all__ = [
     "MAX_CONTEXT",
     "CHUNK_SIZE",
     "CHUNK_OVERLAP",
+    "DEBUG",
     "load",
 ]
