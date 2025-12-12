@@ -195,6 +195,11 @@ def main():
         entry_key = row.get('entry_key', f'row_{idx}')
         text = row.get('reduction_full_text', '')
         
+        print(f"\n{'#'*70}")
+        print(f"# [{idx+1}/{len(df)}] Processing: {entry_key}")
+        print(f"# Input text: {len(text):,} chars (~{len(text)//4:,} tokens)")
+        print(f"{'#'*70}")
+        
         reduction = extract_reduction(backend, text)
         
         if reduction:

@@ -89,20 +89,39 @@ def sequential_extract(
     overlap = overlap or config.CHUNK_OVERLAP
     
     if not needs_chunking(backend, text):
+        if config.DEBUG:
+            print(f"[Strategy] Text fits in context, single extraction")
         return backend.create(extract_prompt(text, None), response_model)
     
     chunks = chunk_text(text, chunk_size, overlap)
+    if config.DEBUG:
+        print(f"\n[Strategy] Sequential extract: {len(chunks)} chunks")
+        print(f"  Text length: {len(text):,} chars")
+        print(f"  Chunk size: {chunk_size} tokens, Overlap: {overlap} tokens")
+    
     partials: list[str] = []
     summary: str | None = None
     
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        if config.DEBUG:
+            print(f"\n[Strategy] Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)")
+            if summary:
+                print(f"  Summary context size: {len(summary):,} chars")
+        
         result = backend.create(extract_prompt(chunk, summary), response_model)
         result_json = result.model_dump_json()
         partials.append(result_json)
         # Use the output as context for next chunk
         summary = result_json
+        
+        if config.DEBUG:
+            print(f"  Partial result size: {len(result_json):,} chars")
     
     # LLM combines all partial results
+    if config.DEBUG:
+        total_partial_size = sum(len(p) for p in partials)
+        print(f"\n[Strategy] Combining {len(partials)} partials ({total_partial_size:,} chars total)")
+    
     return backend.create(combine_prompt(partials), response_model)
 
 

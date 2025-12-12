@@ -18,6 +18,10 @@ from pydantic import BaseModel
 from src import config
 from src import debug_printer
 
+# Request tracking for performance debugging
+_request_count = 0
+_total_time = 0.0
+
 T = TypeVar('T', bound=BaseModel)
 
 # Global server process for cleanup
@@ -148,19 +152,51 @@ class Backend:
         Returns:
             Parsed Pydantic model instance
         """
+        global _request_count, _total_time
+        _request_count += 1
+        request_num = _request_count
+        
+        # Calculate prompt size
+        prompt_chars = len(prompt)
+        prompt_tokens_approx = prompt_chars // 4
+        
         if config.DEBUG:
+            print(f"\n{'='*60}")
+            print(f"[Request #{request_num}] Starting...")
+            print(f"  Prompt size: {prompt_chars:,} chars (~{prompt_tokens_approx:,} tokens)")
+            print(f"  Max tokens: {max_tokens if max_tokens is not None else config.MAX_TOKENS}")
+            print(f"  Response model: {response_model.__name__}")
             debug_printer.print_prompt(prompt)
         
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_model=response_model,
-            temperature=temperature if temperature is not None else config.TEMPERATURE,
-            max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
-        )
+        start_time = time.time()
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_model=response_model,
+                temperature=temperature if temperature is not None else config.TEMPERATURE,
+                max_tokens=max_tokens if max_tokens is not None else config.MAX_TOKENS,
+                max_retries=1,  # Disable instructor's retry loop to prevent context accumulation
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            print(f"\n[Request #{request_num}] FAILED after {elapsed:.2f}s")
+            print(f"  Error type: {type(e).__name__}")
+            print(f"  Error: {e}")
+            raise
+        
+        elapsed = time.time() - start_time
+        _total_time += elapsed
+        avg_time = _total_time / _request_count
         
         if config.DEBUG:
+            print(f"\n[Request #{request_num}] Completed in {elapsed:.2f}s")
+            print(f"  Running avg: {avg_time:.2f}s/request")
+            print(f"  Total requests: {_request_count}, Total time: {_total_time:.1f}s")
             debug_printer.print_response(response)
+        elif elapsed > 10:  # Always warn on slow requests
+            print(f"\n[SLOW] Request #{request_num} took {elapsed:.2f}s (avg: {avg_time:.2f}s)")
         
         return response
     
