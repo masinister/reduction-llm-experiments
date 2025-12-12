@@ -108,15 +108,15 @@ def _token_info(label: str, text: str) -> str:
 
 def print_prompt(prompt: str) -> None:
     """Pretty-print a prompt being sent to the LLM."""
-    print(_header("PROMPT", CYAN))
-    print(_token_info("input", prompt))
-    print(_wrap_text(prompt))
-    print(f"\n{DIM}{_box_line('·')}{RESET}\n")
+    print(_header("PROMPT", CYAN), flush=True)
+    print(_token_info("input", prompt), flush=True)
+    print(_wrap_text(prompt), flush=True)
+    print(f"\n{DIM}{_box_line('·')}{RESET}\n", flush=True)
 
 
 def print_response(response: BaseModel | dict | Any) -> None:
     """Pretty-print a response received from the LLM."""
-    print(_header("RESPONSE", GREEN))
+    print(_header("RESPONSE", GREEN), flush=True)
     
     # Get JSON string for token counting
     if isinstance(response, BaseModel):
@@ -124,14 +124,14 @@ def print_response(response: BaseModel | dict | Any) -> None:
     else:
         response_str = json.dumps(response, default=str)
     
-    print(_token_info("output", response_str))
-    print(_format_json(response))
-    print(f"\n{DIM}{_box_line('·')}{RESET}\n")
+    print(_token_info("output", response_str), flush=True)
+    print(_format_json(response), flush=True)
+    print(f"\n{DIM}{_box_line('·')}{RESET}\n", flush=True)
 
 
 def print_error(error: Exception | str) -> None:
     """Pretty-print an error."""
     RED = "\033[91m"
-    print(_header("ERROR", RED))
-    print(f"  {RED}{error}{RESET}")
-    print(f"\n{DIM}{_box_line('·')}{RESET}\n")
+    print(_header("ERROR", RED), flush=True)
+    print(f"  {RED}{error}{RESET}", flush=True)
+    print(f"\n{DIM}{_box_line('·')}{RESET}\n", flush=True)
