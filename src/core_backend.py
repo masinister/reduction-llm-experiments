@@ -10,6 +10,7 @@ import gc
 import os
 import socket
 import subprocess
+import sys
 import time
 from typing import Type, TypeVar
 
@@ -36,7 +37,11 @@ def _cleanup_server():
     global _server_process
     if _server_process is not None:
         _server_process.terminate()
-        _server_process.wait(timeout=10)
+        try:
+            _server_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _server_process.kill()
+            _server_process.wait(timeout=10)
         _server_process = None
 
 
@@ -188,8 +193,19 @@ class Backend:
     
     def _create_client(self):
         """Create or recreate the instructor client."""
+        # Close any existing underlying HTTP client to avoid socket/FD buildup
+        old_openai_client = getattr(self, "_openai_client", None)
+        if old_openai_client is not None:
+            close = getattr(old_openai_client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+        self._openai_client = OpenAI(base_url=self.base_url, api_key="not-needed")
         self.client = instructor.from_openai(
-            OpenAI(base_url=self.base_url, api_key="not-needed"),
+            self._openai_client,
             mode=instructor.Mode.JSON_SCHEMA,
         )
     
@@ -220,10 +236,14 @@ class Backend:
             "--max-model-len", str(config.MAX_CONTEXT),
         ]
         
+        # IMPORTANT: Do NOT pipe stdout without draining it.
+        # If vLLM logs fill the pipe buffer, the server can deadlock and
+        # requests will appear to hang/time out after some number of calls.
         _server_process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=None,
+            stderr=None,
+            text=True,
         )
         
         # Wait for server to be ready
