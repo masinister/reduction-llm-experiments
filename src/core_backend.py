@@ -6,12 +6,15 @@ and stops the vLLM server as needed.
 """
 
 import atexit
+import gc
+import os
 import socket
 import subprocess
 import time
 from typing import Type, TypeVar
 
 import instructor
+import requests
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -58,6 +61,98 @@ def _parse_url(url: str) -> tuple[str, int]:
         host, port = url.split(":")
         return host, int(port)
     return url, 8000
+
+
+def _get_memory_usage_mb() -> float:
+    """Get current process memory usage in MB."""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / (1024 * 1024)
+    except ImportError:
+        # Fallback for systems without psutil
+        return -1.0
+
+
+def _get_gc_stats() -> dict:
+    """Get garbage collector statistics."""
+    counts = gc.get_count()
+    return {
+        "gen0": counts[0],
+        "gen1": counts[1],
+        "gen2": counts[2],
+        "tracked_objects": len(gc.get_objects()),
+    }
+
+
+def _fetch_vllm_metrics(base_url: str) -> dict | None:
+    """Fetch metrics from vLLM server's /metrics endpoint.
+    
+    Returns parsed metrics dict or None if unavailable.
+    """
+    try:
+        # vLLM metrics endpoint is on the same host but root path
+        metrics_url = base_url.replace("/v1", "") + "/metrics"
+        resp = requests.get(metrics_url, timeout=2)
+        if resp.status_code != 200:
+            return None
+        
+        # Parse Prometheus-style metrics
+        metrics = {}
+        for line in resp.text.split("\n"):
+            if line.startswith("#") or not line.strip():
+                continue
+            # Parse "metric_name{labels} value" or "metric_name value"
+            if " " in line:
+                parts = line.rsplit(" ", 1)
+                if len(parts) == 2:
+                    name_part, value = parts
+                    # Extract metric name (before any {)
+                    metric_name = name_part.split("{")[0]
+                    try:
+                        metrics[metric_name] = float(value)
+                    except ValueError:
+                        pass
+        return metrics
+    except Exception:
+        return None
+
+
+def _print_diagnostics(base_url: str, request_num: int) -> None:
+    """Print diagnostic statistics for debugging resource leaks."""
+    print(f"\n{'─'*60}")
+    print(f"[Diagnostics for Request #{request_num}]")
+    
+    # Memory usage
+    mem_mb = _get_memory_usage_mb()
+    if mem_mb > 0:
+        print(f"  Python process memory: {mem_mb:.1f} MB")
+    
+    # GC stats
+    gc_stats = _get_gc_stats()
+    print(f"  GC generations: gen0={gc_stats['gen0']}, gen1={gc_stats['gen1']}, gen2={gc_stats['gen2']}")
+    print(f"  Tracked objects: {gc_stats['tracked_objects']:,}")
+    
+    # vLLM server metrics
+    vllm_metrics = _fetch_vllm_metrics(base_url)
+    if vllm_metrics:
+        # Key metrics to watch for resource leaks
+        kv_cache_usage = vllm_metrics.get("vllm:gpu_cache_usage_perc", -1)
+        cpu_cache_usage = vllm_metrics.get("vllm:cpu_cache_usage_perc", -1)
+        num_requests_running = vllm_metrics.get("vllm:num_requests_running", -1)
+        num_requests_waiting = vllm_metrics.get("vllm:num_requests_waiting", -1)
+        num_preemptions = vllm_metrics.get("vllm:num_preemptions_total", -1)
+        
+        print(f"  vLLM GPU KV cache usage: {kv_cache_usage*100:.1f}%" if kv_cache_usage >= 0 else "  vLLM GPU KV cache: N/A")
+        print(f"  vLLM CPU cache usage: {cpu_cache_usage*100:.1f}%" if cpu_cache_usage >= 0 else "  vLLM CPU cache: N/A")
+        print(f"  vLLM requests running: {int(num_requests_running)}" if num_requests_running >= 0 else "")
+        print(f"  vLLM requests waiting: {int(num_requests_waiting)}" if num_requests_waiting >= 0 else "")
+        if num_preemptions > 0:
+            print(f"  ⚠️  vLLM preemptions (OOM indicator): {int(num_preemptions)}")
+    else:
+        print("  vLLM metrics: unavailable")
+    
+    print(f"{'─'*60}")
 
 
 class Backend:
@@ -219,8 +314,12 @@ class Backend:
             debug_printer.print_raw_response(raw_response)
             
             debug_printer.print_response(response)
+            
+            _print_diagnostics(self.base_url, request_num)
         elif elapsed > 10:  # Always warn on slow requests
             print(f"\n[SLOW] Request #{request_num} took {elapsed:.2f}s (avg: {avg_time:.2f}s)")
+            # Print diagnostics on slow requests even in non-debug mode
+            _print_diagnostics(self.base_url, request_num)
         
         return response
     
