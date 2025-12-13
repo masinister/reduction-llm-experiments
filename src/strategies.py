@@ -5,6 +5,7 @@ Two approaches for handling text that exceeds context limits:
 - Hierarchical: Process chunks independently, LLM combines all at once
 """
 
+import gc
 from typing import Callable, Type, TypeVar
 from pydantic import BaseModel
 
@@ -116,6 +117,10 @@ def sequential_extract(
         
         if config.DEBUG:
             print(f"  Partial result size: {len(result_json):,} chars")
+        
+        # Cleanup intermediate objects to prevent memory buildup
+        del result
+        gc.collect()
     
     # LLM combines all partial results
     if config.DEBUG:
@@ -163,6 +168,9 @@ def hierarchical_extract(
     for chunk in chunks:
         result = backend.create(extract_prompt(chunk), response_model)
         partials.append(result.model_dump_json())
+        # Cleanup intermediate objects
+        del result
+        gc.collect()
     
     # LLM combines all partial results
     return backend.create(combine_prompt(partials), response_model)

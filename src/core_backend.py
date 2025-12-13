@@ -81,16 +81,31 @@ class Backend:
         """
         self.base_url = base_url or config.VLLM_URL
         self.model = model or config.MODEL
+        self._request_count_since_reset = 0
+        self._reset_interval = 10  # Reset client every N requests
         
         host, port = _parse_url(self.base_url)
         
         if auto_start and not _is_port_open(host, port):
             self._start_server(port)
         
+        self._create_client()
+    
+    def _create_client(self):
+        """Create or recreate the instructor client."""
         self.client = instructor.from_openai(
             OpenAI(base_url=self.base_url, api_key="not-needed"),
             mode=instructor.Mode.JSON_SCHEMA,
         )
+    
+    def _maybe_reset_client(self):
+        """Reset client periodically to prevent connection pool buildup."""
+        self._request_count_since_reset += 1
+        if self._request_count_since_reset >= self._reset_interval:
+            self._create_client()
+            self._request_count_since_reset = 0
+            if config.DEBUG:
+                print("[Backend] Client reset to prevent resource buildup")
     
     def _start_server(self, port: int):
         """Start vLLM server and wait for it to be ready."""
@@ -155,6 +170,9 @@ class Backend:
         global _request_count, _total_time
         _request_count += 1
         request_num = _request_count
+        
+        # Periodically reset client to prevent connection pool buildup
+        self._maybe_reset_client()
         
         # Calculate prompt size
         prompt_chars = len(prompt)

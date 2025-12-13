@@ -5,6 +5,7 @@ the sequential chunking strategy when needed.
 """
 
 import argparse
+import gc
 import json
 import os
 
@@ -218,6 +219,10 @@ def main():
         else:
             print(f"[{entry_key}] Extraction failed")
             failed += 1
+        
+        # Explicit cleanup to prevent resource leak
+        del reduction
+        gc.collect()
     
     # Save results
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
