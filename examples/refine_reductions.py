@@ -4,7 +4,13 @@ Loads structured reductions from a JSONL file (default: data/processed/karp_redu
 critiques their rigor/quality (prompt 1), then applies edits to produce an improved
 structured representation (prompt 2).
 
-Output is written as JSONL with the refined Reduction fields plus an attached critique.
+This script is designed to be run iteratively by swapping the input file.
+
+Output JSONL schema:
+- `reduction`: the refined Reduction object (nested)
+- `previous_reduction_critique`: critique of the input reduction that was refined
+
+All other non-reduction metadata from the input record is preserved.
 """
 
 from __future__ import annotations
@@ -165,6 +171,18 @@ Return ONLY the JSON for a Reduction object with fields:
 # ============================================================================
 
 
+def _extract_reduction_dict(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the nested reduction dict.
+
+    This script only supports the canonical schema:
+    - {"reduction": {...}}
+    """
+    nested = record.get("reduction")
+    if not isinstance(nested, dict):
+        raise ValueError("Record missing required object field 'reduction'")
+    return nested
+
+
 def iter_jsonl(path: Path):
     with open(path, "r", encoding="utf-8") as fh:
         for line_num, line in enumerate(fh, start=1):
@@ -237,13 +255,21 @@ def main() -> None:
 
             entry_key = record.get("entry_key", "")
             try:
-                critique = backend.create(make_critique_prompt(record), Critique)
-                refined = backend.create(make_refine_prompt(record, critique), Reduction)
+                reduction_in = _extract_reduction_dict(record)
+                critique = backend.create(make_critique_prompt(reduction_in), Critique)
+                refined = backend.create(make_refine_prompt(reduction_in, critique), Reduction)
 
-                # Preserve original metadata but replace the reduction fields.
-                out_record = dict(record)
-                out_record.update(refined.model_dump())
-                out_record["refinement_critique"] = critique.model_dump()
+                refined_dict = refined.model_dump()
+
+                # Preserve input metadata except fields this script overwrites.
+                out_record = {
+                    k: v
+                    for k, v in record.items()
+                    if k not in ("reduction", "previous_reduction_critique")
+                }
+
+                out_record["reduction"] = refined_dict
+                out_record["previous_reduction_critique"] = critique.model_dump()
 
                 out_fh.write(json.dumps(out_record, ensure_ascii=False) + "\n")
                 refined_ok += 1

@@ -211,7 +211,7 @@ def main():
             result = {
                 'entry_key': entry_key,
                 'difficulty': row.get('difficulty'),
-                **reduction.model_dump()
+                'reduction': reduction.model_dump(),
             }
             results.append(result)
             print(f"[{entry_key}] Extraction successful:")
