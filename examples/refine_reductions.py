@@ -1,16 +1,19 @@
-"""Refine extracted reduction representations via a two-step LLM pass.
+"""Refine reductions based on critique output.
 
-Loads structured reductions from a JSONL file (default: data/processed/karp_reductions.jsonl),
-critiques their rigor/quality (prompt 1), then applies edits to produce an improved
-structured representation (prompt 2).
+Loads critiqued reductions from a JSONL file (output of critique_reductions.py)
+and applies fixes to address the flagged issues.
 
-This script is designed to be run iteratively by swapping the input file.
+Input JSONL schema (from critique_reductions.py):
+- `entry_key`: identifier
+- `reduction`: the reduction to refine
+- `critique`: the critique with major_issues and minor_issues
+- `has_major_issues`: boolean flag
 
 Output JSONL schema:
-- `reduction`: the refined Reduction object (nested)
-- `previous_reduction_critique`: critique of the input reduction that was refined
-
-All other non-reduction metadata from the input record is preserved.
+- `entry_key`: identifier (preserved)
+- `reduction`: the refined Reduction object
+- `input_critique`: the critique that was addressed
+- `was_refined`: boolean indicating if changes were made
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from src.core_backend import Backend
 
 
 # ============================================================================
-# Pydantic Models (match extraction schema)
+# Pydantic Models
 # ============================================================================
 
 
@@ -57,130 +60,51 @@ class Reduction(BaseModel):
     key_insight: str = Field(description="The key idea or intuition that makes this reduction work")
 
 
-class Critique(BaseModel):
-    """Critique of a structured reduction representation."""
-
-    summary: str = Field(description="One-paragraph summary of quality and key issues")
-    major_issues: list[str] = Field(description="Critical correctness/rigor issues that must be fixed")
-    minor_issues: list[str] = Field(description="Smaller clarity/formatting issues")
-    suggested_edits: list[str] = Field(description="Actionable edits to improve correctness and clarity")
-    confidence: float = Field(description="Confidence in critique from 0.0 to 1.0")
-
-
 # ============================================================================
-# Prompts
+# Prompt
 # ============================================================================
 
 
-_PLAIN_TEXT_RULES = """*** CRITICAL: ALL OUTPUT MUST BE PLAIN TEXT - NO LATEX ***
-Convert all math notation to readable plain text:
-- \\land, \\wedge -> "AND"
-- \\lor, \\vee -> "OR"
-- \\neg, \\lnot -> "NOT"
-- \\in -> "in"
-- \\subseteq -> "subset of"
-- \\forall -> "for all"
-- \\exists -> "there exists"
-- \\implies, \\Rightarrow -> "implies" or "=>"
-- \\iff, \\Leftrightarrow -> "if and only if"
-- $x_i$ -> "x_i"
-- \\textsc{Name} -> "NAME"
-- \\Big, \\big, \\left, \\right -> remove entirely
-- Remove all \\begin{...}, \\end{...}, \\item, etc.
-- Avoid backslashes in the final text.
+_PLAIN_TEXT_RULES = """Output must be plain text only—no LaTeX or backslashes.
+Use readable equivalents: AND, OR, NOT, "in", "subset of", "for all", "there exists", "implies", "iff".
 """
 
 
-def make_critique_prompt(record: dict[str, Any]) -> str:
-    record_json = json.dumps(record, ensure_ascii=False, indent=2)
+def make_refine_prompt(reduction: dict[str, Any], critique: dict[str, Any]) -> str:
+    reduction_json = json.dumps(reduction, ensure_ascii=False, indent=2)
+    critique_json = json.dumps(critique, ensure_ascii=False, indent=2)
 
-    return f"""You are an expert in NP-completeness and polynomial-time reductions.
+    source_problem = reduction.get("source_problem", "")
+    target_problem = reduction.get("target_problem", "")
 
-Your task: critique the following structured reduction representation for rigor, correctness, and clarity.
+    return f"""Apply minimal edits to fix the issues in the critique.
 
-Focus on:
-1) Definitions: do input_format and yes_condition match standard definitions? Any ambiguity?
-2) Construction: are reduction_steps complete, deterministic, and polynomial-time? Are parameters (like k) defined?
-3) Correctness: are forward_proof and backward_proof logically sound and consistent with steps?
-4) Consistency: do the problems/definitions/steps/proofs align (same objects, symbols, direction)?
-5) Completeness: is any crucial argument missing (e.g., iff, polynomial bounds, gadget correctness)?
-6) Style: plain text only; avoid LaTeX; steps should be atomic and unambiguous.
+Constraints:
+- Keep source_problem exactly as "{source_problem}"
+- Keep target_problem exactly as "{target_problem}"
+- Only fix what the critique flags; do not introduce unrelated changes
 
-Do NOT rewrite the whole reduction here. Only critique and propose concrete fixes.
-
-Return a JSON object matching this schema:
-- summary: string
-- major_issues: list of strings
-- minor_issues: list of strings
-- suggested_edits: list of strings
-- confidence: number in [0, 1]
-
-{_PLAIN_TEXT_RULES}
-
-=== STRUCTURED REDUCTION (INPUT) ===
-{record_json}
-"""
-
-
-def make_refine_prompt(record: dict[str, Any], critique: Critique) -> str:
-    record_json = json.dumps(record, ensure_ascii=False, indent=2)
-    critique_json = critique.model_dump_json(indent=2)
-
-    source_problem = record.get("source_problem", "")
-    target_problem = record.get("target_problem", "")
-
-    return f"""You are an expert editor of NP-completeness reductions.
-
-You will improve the structured reduction representation using the critique.
-
-Hard constraints:
-- Keep source_problem EXACTLY as: "{source_problem}"
-- Keep target_problem EXACTLY as: "{target_problem}"
-- Keep problem definition names consistent with those.
-- Output MUST be valid JSON for the specified schema.
-- Output MUST be plain text (no LaTeX, no backslashes).
-- Do not invent a completely different reduction. Only fix rigor/clarity/consistency issues.
-
-Quality bar:
-- reduction_steps: atomic, imperative, and complete enough to implement.
-- forward_proof/backward_proof: logically valid, references the construction, and addresses any parameters.
-- Mention polynomial-time / size bounds if they are relevant and missing.
-
-Return ONLY the JSON for a Reduction object with fields:
-- source_problem
-- target_problem
-- source_definition: {{name, input_format, yes_condition}}
-- target_definition: {{name, input_format, yes_condition}}
-- reduction_steps: list of strings
-- forward_proof
-- backward_proof
+Return a JSON Reduction object with fields:
+- source_problem, target_problem
+- source_definition (name, input_format, yes_condition)
+- target_definition (name, input_format, yes_condition)
+- reduction_steps (list of strings)
+- forward_proof, backward_proof
 - key_insight
 
 {_PLAIN_TEXT_RULES}
 
-=== ORIGINAL STRUCTURED REDUCTION ===
-{record_json}
+=== ORIGINAL REDUCTION ===
+{reduction_json}
 
-=== CRITIQUE (USE THIS) ===
+=== CRITIQUE ===
 {critique_json}
 """
 
 
 # ============================================================================
-# IO helpers
+# IO Helpers
 # ============================================================================
-
-
-def _extract_reduction_dict(record: dict[str, Any]) -> dict[str, Any]:
-    """Return the nested reduction dict.
-
-    This script only supports the canonical schema:
-    - {"reduction": {...}}
-    """
-    nested = record.get("reduction")
-    if not isinstance(nested, dict):
-        raise ValueError("Record missing required object field 'reduction'")
-    return nested
 
 
 def iter_jsonl(path: Path):
@@ -195,6 +119,13 @@ def iter_jsonl(path: Path):
                 raise ValueError(f"Invalid JSON on line {line_num} of {path}: {e}") from e
 
 
+def has_issues(critique: dict[str, Any]) -> bool:
+    """Check if critique has any issues to address."""
+    major = critique.get("major_issues", [])
+    minor = critique.get("minor_issues", [])
+    return bool(major) or bool(minor)
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -202,34 +133,32 @@ def iter_jsonl(path: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Critique and refine structured reductions from karp_reductions.jsonl",
+        description="Refine reductions based on critique output",
     )
     parser.add_argument(
         "--input",
         type=str,
-        default=str(Path("data") / "processed" / "karp_reductions.jsonl"),
-        help="Input JSONL path",
+        default=str(Path("data") / "processed" / "karp_reductions_critiqued.jsonl"),
+        help="Input JSONL path (output from critique_reductions.py)",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default=str(Path("data") / "processed" / "karp_reductions_refined.jsonl"),
-        help="Output JSONL path",
+        default=None,
+        help="Output JSONL path (default: input path with '_refined' suffix)",
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of records")
-    parser.add_argument(
-        "--skip",
-        type=int,
-        default=0,
-        help="Skip first N records (after reading)",
-    )
+    parser.add_argument("--skip", type=int, default=0, help="Skip first N records")
 
     args = parser.parse_args()
 
     config.load()
 
     input_path = Path(args.input)
-    output_path = Path(args.output)
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        output_path = input_path.with_stem(input_path.stem + "_refined")
 
     if not input_path.exists():
         raise FileNotFoundError(f"Input not found: {input_path}")
@@ -239,7 +168,8 @@ def main() -> None:
     backend = Backend()
 
     processed = 0
-    refined_ok = 0
+    refined = 0
+    skipped = 0
     failed = 0
 
     with open(output_path, "w", encoding="utf-8") as out_fh:
@@ -253,43 +183,64 @@ def main() -> None:
 
             processed += 1
 
-            entry_key = record.get("entry_key", "")
+            entry_key = record.get("entry_key", f"record_{processed}")
+
+            # Skip error records from critique step
+            if "error" in record and "reduction" not in record:
+                skipped += 1
+                continue
+
             try:
-                reduction_in = _extract_reduction_dict(record)
-                critique = backend.create(make_critique_prompt(reduction_in), Critique)
-                refined = backend.create(make_refine_prompt(reduction_in, critique), Reduction)
+                reduction_in = record.get("reduction", {})
+                critique = record.get("critique", {})
 
-                refined_dict = refined.model_dump()
+                if not has_issues(critique):
+                    # No issues to fix, pass through unchanged
+                    out_record = {
+                        "entry_key": entry_key,
+                        "reduction": reduction_in,
+                        "input_critique": critique,
+                        "was_refined": False,
+                    }
+                    skipped += 1
+                else:
+                    # Refine based on critique
+                    refined_reduction = backend.create(
+                        make_refine_prompt(reduction_in, critique),
+                        Reduction,
+                        temperature=0.1,
+                    )
 
-                # Preserve input metadata except fields this script overwrites.
-                out_record = {
-                    k: v
-                    for k, v in record.items()
-                    if k not in ("reduction", "previous_reduction_critique")
-                }
-
-                out_record["reduction"] = refined_dict
-                out_record["previous_reduction_critique"] = critique.model_dump()
+                    out_record = {
+                        "entry_key": entry_key,
+                        "reduction": refined_reduction.model_dump(),
+                        "input_critique": critique,
+                        "was_refined": True,
+                    }
+                    refined += 1
 
                 out_fh.write(json.dumps(out_record, ensure_ascii=False) + "\n")
-                refined_ok += 1
+
+                status = "REFINED" if out_record["was_refined"] else "UNCHANGED"
+                print(f"[{entry_key}] {status}")
+
             except Exception as e:
                 failed += 1
-                # Keep a minimal error record so the run is resumable/debuggable.
                 err_record = {
                     "entry_key": entry_key,
                     "error": str(e),
                 }
                 out_fh.write(json.dumps(err_record, ensure_ascii=False) + "\n")
+                print(f"[{entry_key}] ERROR: {e}")
 
-            # Cleanup between iterations to reduce memory growth.
             gc.collect()
 
     print("\nRefinement complete!")
     print(f"  Input:  {input_path}")
     print(f"  Output: {output_path}")
     print(f"  Processed: {processed}")
-    print(f"  Refined OK: {refined_ok}")
+    print(f"  Refined: {refined}")
+    print(f"  Skipped (no issues): {skipped}")
     print(f"  Failed: {failed}")
 
 

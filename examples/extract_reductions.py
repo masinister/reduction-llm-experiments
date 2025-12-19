@@ -45,6 +45,15 @@ class Reduction(BaseModel):
     key_insight: str = Field(description="The key idea or intuition that makes this reduction work")
 
 
+class Validation(BaseModel):
+    """Validation result comparing extraction against ground truth."""
+    
+    agrees: bool = Field(description="True if extraction faithfully represents the ground truth reduction")
+    major_errors: list[str] = Field(description="Critical errors where extraction contradicts the ground truth (empty if none)")
+    minor_errors: list[str] = Field(description="Minor inaccuracies or omissions (empty if none)")
+    explanation: str = Field(description="Brief explanation of the validation result")
+
+
 # ============================================================================
 # Prompts
 # ============================================================================
@@ -133,6 +142,122 @@ PARTIAL EXTRACTIONS:
 {joined}"""
 
 
+def make_validation_prompt(extraction: Reduction, raw_text: str) -> str:
+    """Create prompt to validate extraction for correctness."""
+    extraction_json = extraction.model_dump_json(indent=2)
+    return f"""Review this structured reduction for correctness and agreement with the raw text.
+
+Be CONSERVATIVE:
+- Only flag major_errors for genuine correctness problems or significant misrepresentations
+- Minor wording differences, equivalent formulations, or small clarifications are acceptable
+- If the core construction and proofs are sound, set agrees=True
+
+Output must be plain text only—no LaTeX or backslashes.
+
+Return a JSON Validation object:
+- agrees: true if extraction is correct and faithful, false only if major errors exist
+- major_errors: list of genuine correctness problems (can be empty)
+- minor_errors: list of minor issues (can be empty)
+- explanation: brief summary
+
+=== STRUCTURED EXTRACTION ===
+{extraction_json}
+
+=== RAW REDUCTION TEXT ===
+{raw_text}
+"""
+
+
+def make_repair_prompt(
+    extraction: Reduction,
+    validation: Validation,
+    raw_text: str,
+    source_name: str,
+    target_name: str,
+) -> str:
+    """Create prompt to repair extraction based on validation errors."""
+    extraction_json = extraction.model_dump_json(indent=2)
+    errors_json = json.dumps({
+        "major_errors": validation.major_errors,
+        "minor_errors": validation.minor_errors,
+        "explanation": validation.explanation,
+    }, indent=2)
+    
+    return f"""Fix the extraction to address the validation errors.
+
+Guidelines:
+- Fix the flagged correctness issues
+- Preserve parts that are already correct
+- Keep the reduction faithful to the raw text
+- You may add minor clarifications to improve rigor
+
+Constraints:
+- Keep source_problem exactly as "{source_name}"
+- Keep target_problem exactly as "{target_name}"
+
+Output must be plain text only—no LaTeX or backslashes.
+
+Return a corrected JSON Reduction object.
+
+=== CURRENT EXTRACTION ===
+{extraction_json}
+
+=== VALIDATION ERRORS ===
+{errors_json}
+
+=== RAW REDUCTION TEXT ===
+{raw_text}
+"""
+
+
+# ============================================================================
+# Validation & Repair
+# ============================================================================
+
+MAX_REPAIR_ATTEMPTS = 3
+
+
+def validate_and_repair(
+    backend: Backend,
+    extraction: Reduction,
+    raw_text: str,
+    source_name: str,
+    target_name: str,
+) -> tuple[Reduction, list[Validation]]:
+    """Validate extraction for correctness and repair if needed.
+    
+    Checks the extraction for correctness, using the raw reduction text
+    as a reference. Allows minor improvements if they fix genuine issues.
+    
+    Returns:
+        Tuple of (final_reduction, list_of_validations)
+    """
+    validations = []
+    current = extraction
+    
+    for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
+        validation = backend.create(
+            make_validation_prompt(current, raw_text),
+            Validation,
+            temperature=0.0,
+        )
+        validations.append(validation)
+        
+        if validation.agrees or not validation.major_errors:
+            # No major errors, we're done
+            break
+        
+        if attempt < MAX_REPAIR_ATTEMPTS:
+            print(f"  [Repair attempt {attempt + 1}/{MAX_REPAIR_ATTEMPTS}] Fixing {len(validation.major_errors)} major error(s)...")
+            current = backend.create(
+                make_repair_prompt(current, validation, raw_text, source_name, target_name),
+                Reduction,
+                temperature=0.1,
+            )
+    
+    return current, validations
+
+
 # ============================================================================
 # Processing
 # ============================================================================
@@ -144,24 +269,47 @@ def extract_reduction(
     source_def: str,
     target_name: str,
     target_def: str,
-) -> Reduction:
-    """Extract structured reduction from text with problem definitions."""
+    validate: bool = True,
+) -> tuple[Reduction | None, list[Validation]]:
+    """Extract structured reduction from text with problem definitions.
+    
+    Args:
+        backend: LLM backend
+        text: Raw reduction text
+        source_name: Source problem name
+        source_def: Source problem definition
+        target_name: Target problem name  
+        target_def: Target problem definition
+        validate: Whether to validate against ground truth and repair
+        
+    Returns:
+        Tuple of (reduction, list_of_validations). Validations empty if validate=False.
+    """
     if not text or not text.strip():
-        return None
+        return None, []
     
     extract_prompt = make_extract_prompt(source_name, source_def, target_name, target_def)
     
     try:
-        return sequential_extract(
+        reduction = sequential_extract(
             backend=backend,
             text=text,
             response_model=Reduction,
             extract_prompt=extract_prompt,
             combine_prompt=combine_prompt,
         )
+        
+        if validate and reduction:
+            reduction, validations = validate_and_repair(
+                backend, reduction, text, source_name, target_name
+            )
+            return reduction, validations
+        
+        return reduction, []
+        
     except Exception as e:
         print(f"Extraction failed: {e}")
-        return None
+        return None, []
 
 
 def main():
@@ -203,7 +351,7 @@ def main():
         print(f"# Input text: {len(text):,} chars (~{len(text)//4:,} tokens)")
         print(f"{'#'*70}")
         
-        reduction = extract_reduction(
+        reduction, validations = extract_reduction(
             backend, text, source_name, source_def, target_name, target_def
         )
         
@@ -213,8 +361,21 @@ def main():
                 'difficulty': row.get('difficulty'),
                 'reduction': reduction.model_dump(),
             }
+            # Include validation summary if available
+            if validations:
+                final_validation = validations[-1]
+                result['validation'] = {
+                    'agrees': final_validation.agrees,
+                    'repair_attempts': len(validations) - 1,
+                    'final_major_errors': final_validation.major_errors,
+                    'final_minor_errors': final_validation.minor_errors,
+                }
             results.append(result)
             print(f"[{entry_key}] Extraction successful:")
+            if validations:
+                v = validations[-1]
+                status = "VALID" if v.agrees else f"ISSUES ({len(v.major_errors)} major)"
+                print(f"  Validation: {status} after {len(validations)-1} repair(s)")
             print(json.dumps(result, indent=2))
         else:
             print(f"[{entry_key}] Extraction failed")
