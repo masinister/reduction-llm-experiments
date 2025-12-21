@@ -97,12 +97,33 @@ Fill a Reduction object with:
 7) backward_proof: argue constructed target YES => source YES
 8) key_insight: the central idea that makes the reduction work
 
+STEP-WRITING GUIDELINES (for reduction_steps, forward_proof, backward_proof):
+- Each step must be ONE of:
+  * DEFINITION: "Define X as ..." or "Construct X by ..."
+  * CLAIM: "If P then Q" or "X has property Y"
+- Avoid vague phrases like "we then do the usual trick" or "handle appropriately"
+- Define all variables/parameters BEFORE using them
+- Be explicit: instead of "add appropriate clauses", say exactly which clauses
+- Each step should be rewritable as a single mathematical sentence
+- Example good step: "Define vertex set V' = {{v_i : x_i is a variable in phi}}"
+- Example bad step: "We then add edges in the usual way"
+
 Remember: the field text must be plain English (no LaTeX)."""
 
 
 # ============================================================================
 # Processing
 # ============================================================================
+
+
+def count_jsonl_lines(path: Path) -> int:
+    """Count non-empty lines in a JSONL file."""
+    count = 0
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                count += 1
+    return count
 
 
 def iter_jsonl(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -167,8 +188,9 @@ def main() -> None:
     processed = 0
 
     with open(args.output, "w", encoding="utf-8") as out_fh:
+        total_records = count_jsonl_lines(input_path)
         print(f"\nProcessing zero-shot generations from: {input_path}")
-        for _, record in tqdm(iter_jsonl(input_path), desc="Zero-shot", unit="reduction"):
+        for _, record in tqdm(iter_jsonl(input_path), total=total_records, desc="Zero-shot", unit="reduction"):
             if args.skip and processed < args.skip:
                 processed += 1
                 continue

@@ -1,21 +1,3 @@
-"""Refine reductions based on critique output.
-
-Loads critiqued reductions from a JSONL file (output of critique_reductions.py)
-and applies fixes to address the flagged issues.
-
-Input JSONL schema (from critique_reductions.py):
-- `entry_key`: identifier
-- `reduction`: the reduction to refine
-- `critique`: the critique with major_issues and minor_issues
-- `has_major_issues`: boolean flag
-
-Output JSONL schema:
-- `entry_key`: identifier (preserved)
-- `reduction`: the refined Reduction object
-- `input_critique`: the critique that was addressed
-- `was_refined`: boolean indicating if changes were made
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -70,19 +52,28 @@ Use readable equivalents: AND, OR, NOT, "in", "subset of", "for all", "there exi
 """
 
 
-def make_refine_prompt(reduction: dict[str, Any], critique: dict[str, Any]) -> str:
+def make_refine_prompt(reduction: dict[str, Any], step_analysis: list[dict[str, Any]], summary: dict[str, Any]) -> str:
     reduction_json = json.dumps(reduction, ensure_ascii=False, indent=2)
-    critique_json = json.dumps(critique, ensure_ascii=False, indent=2)
+    step_analysis_json = json.dumps(step_analysis, ensure_ascii=False, indent=2)
+    blockers = summary.get("blockers", [])
 
     source_problem = reduction.get("source_problem", "")
     target_problem = reduction.get("target_problem", "")
 
-    return f"""Apply minimal edits to fix the issues in the critique.
+    return f"""Apply minimal edits to fix the issues identified in the step analysis.
+
+The analysis flagged steps that are "unclear" or not "rewritable" as explicit mathematical statements.
+Your goal is to rewrite those steps so each becomes a clear DEFINITION or CLAIM.
+
+Blockers identified:
+{json.dumps(blockers, ensure_ascii=False, indent=2)}
 
 Constraints:
 - Keep source_problem exactly as "{source_problem}"
 - Keep target_problem exactly as "{target_problem}"
-- Only fix what the critique flags; do not introduce unrelated changes
+- Only fix steps that were flagged as unclear or not rewritable
+- Make each step a single explicit mathematical statement
+- Do not introduce unrelated changes
 
 Return a JSON Reduction object with fields:
 - source_problem, target_problem
@@ -97,8 +88,8 @@ Return a JSON Reduction object with fields:
 === ORIGINAL REDUCTION ===
 {reduction_json}
 
-=== CRITIQUE ===
-{critique_json}
+=== STEP ANALYSIS ===
+{step_analysis_json}
 """
 
 
@@ -119,11 +110,15 @@ def iter_jsonl(path: Path):
                 raise ValueError(f"Invalid JSON on line {line_num} of {path}: {e}") from e
 
 
-def has_issues(critique: dict[str, Any]) -> bool:
-    """Check if critique has any issues to address."""
-    major = critique.get("major_issues", [])
-    minor = critique.get("minor_issues", [])
-    return bool(major) or bool(minor)
+def has_issues(record: dict[str, Any]) -> bool:
+    """Check if critique has any blockers to address."""
+    # Check the has_blockers flag directly
+    if record.get("has_blockers"):
+        return True
+    # Or check summary blockers
+    summary = record.get("summary", {})
+    blockers = summary.get("blockers", [])
+    return bool(blockers)
 
 
 # ============================================================================
@@ -192,21 +187,23 @@ def main() -> None:
 
             try:
                 reduction_in = record.get("reduction", {})
-                critique = record.get("critique", {})
+                step_analysis = record.get("step_analysis", [])
+                summary = record.get("summary", {})
 
-                if not has_issues(critique):
-                    # No issues to fix, pass through unchanged
+                if not has_issues(record):
+                    # No blockers to fix, pass through unchanged
                     out_record = {
                         "entry_key": entry_key,
                         "reduction": reduction_in,
-                        "input_critique": critique,
+                        "input_step_analysis": step_analysis,
+                        "input_summary": summary,
                         "was_refined": False,
                     }
                     skipped += 1
                 else:
-                    # Refine based on critique
+                    # Refine based on step analysis
                     refined_reduction = backend.create(
-                        make_refine_prompt(reduction_in, critique),
+                        make_refine_prompt(reduction_in, step_analysis, summary),
                         Reduction,
                         temperature=0.1,
                     )
@@ -214,7 +211,8 @@ def main() -> None:
                     out_record = {
                         "entry_key": entry_key,
                         "reduction": refined_reduction.model_dump(),
-                        "input_critique": critique,
+                        "input_step_analysis": step_analysis,
+                        "input_summary": summary,
                         "was_refined": True,
                     }
                     refined += 1

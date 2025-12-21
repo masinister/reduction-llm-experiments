@@ -1,9 +1,3 @@
-"""Example: Extract structured Reduction models from the dataset.
-
-This script processes each reduction from the karp dataset using
-the sequential chunking strategy when needed.
-"""
-
 import argparse
 import gc
 import json
@@ -113,6 +107,15 @@ TARGET PROBLEM: {target_name}
 
 5. reduction_steps: List of atomic construction steps from the reduction proof.
    Each step should be self-contained.
+   
+   STEP-WRITING GUIDELINES (for reduction_steps, forward_proof, backward_proof):
+   - Each step must be ONE of:
+     * DEFINITION: "Define X as ..." or "Construct X by ..."
+     * CLAIM: "If P then Q" or "X has property Y"
+   - Avoid vague phrases like "we then do the usual trick" or "handle the edges"
+   - Define all variables/parameters BEFORE using them
+   - Be explicit: instead of "add appropriate clauses", say exactly which clauses
+   - Each step should be rewritable as a single mathematical sentence
 
 6. forward_proof: From the proof, extract the argument that:
    source is YES => constructed target is YES
